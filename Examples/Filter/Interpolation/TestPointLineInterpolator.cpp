@@ -34,6 +34,13 @@ iGame::PointSet::Pointer CreateSource() {
     vector->AddElement3(0.0, 0.0, 0.0);
     vector->AddElement3(2.0, 4.0, 6.0);
     source->GetAttributeSet()->AddAttribute(IG_VECTOR, IG_POINT, vector);
+
+    auto integer = iGame::IntArray::New();
+    integer->SetName("IntegerSamples");
+    integer->SetDimension(1);
+    integer->AddValue(0);
+    integer->AddValue(3);
+    source->GetAttributeSet()->AddAttribute(IG_SCALAR, IG_POINT, integer);
     return source;
 }
 
@@ -60,11 +67,14 @@ bool TestParameterizedLineAndVoronoi() {
 
     auto& temperature = output->GetAttributeSet()->GetAttribute("Temperature");
     auto& velocity = output->GetAttributeSet()->GetAttribute("Velocity");
+    auto& integer = output->GetAttributeSet()->GetAttribute("IntegerSamples");
     ok &= Check(!temperature.IsNone() && temperature.pointer->GetArrayType() == IG_DoubleArray,
                 "scalar name and type are preserved");
     ok &= Check(!velocity.IsNone() && velocity.pointer->GetDimension() == 3 &&
                         velocity.pointer->GetArrayType() == IG_FloatArray,
                 "vector name, type, and components are preserved");
+    ok &= Check(!integer.IsNone() && integer.pointer->GetArrayType() == IG_FloatArray,
+                "integral arrays are promoted to float like VTK");
     ok &= Check(Near(temperature.pointer->GetValue(0), 0.0) && Near(temperature.pointer->GetValue(1), 0.0),
                 "Voronoi samples nearest to the first source point");
     ok &= Check(Near(temperature.pointer->GetValue(3), 20.0) && Near(temperature.pointer->GetValue(4), 20.0),
@@ -103,6 +113,8 @@ bool TestGaussianAndShepard() {
     bool ok = Check(filter->Execute(), "Gaussian execution");
     auto gaussian = filter->GetLineOutput()->GetAttributeSet()->GetAttribute("Temperature").pointer;
     ok &= Check(Near(gaussian->GetValue(0), 10.0), "Gaussian symmetric weights");
+    auto promoted = filter->GetLineOutput()->GetAttributeSet()->GetAttribute("IntegerSamples").pointer;
+    ok &= Check(Near(promoted->GetValue(0), 1.5), "promoted arrays retain fractional interpolation values");
 
     filter->SetPoint1(iGame::Point(0.5, 0.0, 0.0));
     filter->SetPoint2(iGame::Point(1.0, 0.0, 0.0));

@@ -21,14 +21,8 @@ ArrayObject::Pointer NewArrayLike(ArrayObject* input) {
     switch (input->GetArrayType()) {
         case IG_FloatArray: return FloatArray::New();
         case IG_DoubleArray: return DoubleArray::New();
-        case IG_IntArray: return IntArray::New();
-        case IG_UnsignedIntArray: return UnsignedIntArray::New();
-        case IG_CharArray: return CharArray::New();
-        case IG_UnsignedCharArray: return UnsignedCharArray::New();
-        case IG_ShortArray: return ShortArray::New();
-        case IG_UnsignedShortArray: return UnsignedShortArray::New();
-        case IG_LongLongArray: return LongLongArray::New();
-        case IG_UnsignedLongLongArray: return UnsignedLongLongArray::New();
+        // VTK promotes non-real arrays to float before interpolation so that
+        // fractional weighted values are not truncated by integral storage.
         default: return FloatArray::New();
     }
 }
