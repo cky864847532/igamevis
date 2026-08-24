@@ -219,6 +219,10 @@ igame_add_example(testPointCoordinates Filter/PointCoordinates/TestPointCoordina
 
 # Interpolation
 igame_add_example(testPointLineInterpolator Filter/Interpolation/TestPointLineInterpolator.cpp)
+if (TARGET Qt_module)
+    igame_add_example(testPointLineChart Qt/TestPointLineChart.cpp)
+    target_link_libraries(testPointLineChart PRIVATE Qt_module)
+endif ()
 
 # Vector / Tensor
 igame_add_example(testVector Filter/Vector/TestVector.cpp)

@@ -2041,6 +2041,25 @@ void igQtMainWindow::initAllFilters() {
         }
         const double defaultRadius = std::max(bounds.diag() * 0.1, 1.0e-6);
 
+        std::vector<std::string> plotArrayNames;
+        std::vector<int> plotArrayDimensions;
+        std::vector<QString> plotArrayLabels;
+        if (auto attributes = input->GetAttributeSet()) {
+            const IGsize inputPointCount = input->GetPoints()->GetNumberOfPoints();
+            for (IGsize attributeId = 0; attributeId < attributes->GetNumberOfAttributes(); ++attributeId) {
+                auto& attribute = attributes->GetAttribute(attributeId);
+                if (attribute.IsDeleted() || attribute.attachmentType != IG_POINT || !attribute.pointer ||
+                    attribute.pointer->GetName().empty() ||
+                    attribute.pointer->GetNumberOfElements() != inputPointCount) {
+                    continue;
+                }
+                plotArrayNames.push_back(attribute.pointer->GetName());
+                plotArrayDimensions.push_back(attribute.pointer->GetDimension());
+                plotArrayLabels.push_back(QString::fromStdString(attribute.pointer->GetName()) +
+                                          QStringLiteral(" (%1 分量)").arg(attribute.pointer->GetDimension()));
+            }
+        }
+
         auto* dialog = new igQtFilterDialogDockWidget(this, true);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setFilterTitle(QStringLiteral("点线插值"));
@@ -2084,6 +2103,20 @@ void igQtMainWindow::initAllFilters() {
         if (auto* combo = qobject_cast<QComboBox*>(dialog->getWidget(nullStrategyId))) combo->setCurrentIndex(2);
         const int nullValueId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
                                                       QStringLiteral("Null Value"), QStringLiteral("0"));
+        const bool hasPlotArrays = !plotArrayNames.empty();
+        const int showChartId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                                                      QStringLiteral("显示沿线曲线"),
+                                                      hasPlotArrays ? QStringLiteral("true") : QStringLiteral("false"));
+        if (!hasPlotArrays) plotArrayLabels.push_back(QStringLiteral("无可用点属性数组"));
+        const int plotArrayId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,
+                                                      QStringLiteral("曲线数组"), plotArrayLabels);
+        const int plotComponentId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                          QStringLiteral("数组分量"), QStringLiteral("0"));
+        if (!hasPlotArrays) {
+            if (auto* widget = dialog->getWidget(showChartId)) widget->setEnabled(false);
+            if (auto* widget = dialog->getWidget(plotArrayId)) widget->setEnabled(false);
+            if (auto* widget = dialog->getWidget(plotComponentId)) widget->setEnabled(false);
+        }
 
         dialog->show();
         dialog->setApplyFunctor([=, this]() {
@@ -2128,6 +2161,19 @@ void igQtMainWindow::initAllFilters() {
             const int kernel = dialog->getComboIndex(kernelId, ok);
             const int footprint = dialog->getComboIndex(footprintId, ok);
             const int nullStrategy = dialog->getComboIndex(nullStrategyId, ok);
+            const bool showChart = dialog->getChecked(showChartId, ok);
+            int plotArrayIndex = -1;
+            int plotComponent = 0;
+            if (showChart) {
+                plotArrayIndex = dialog->getComboIndex(plotArrayId, ok);
+                plotComponent = dialog->getInt(plotComponentId, ok);
+                if (!ok || plotArrayIndex < 0 || plotArrayIndex >= static_cast<int>(plotArrayNames.size()) ||
+                    plotComponent < 0 || plotComponent >= plotArrayDimensions[plotArrayIndex]) {
+                    showDarkFramelessMessage(QStringLiteral("参数错误"),
+                                             QStringLiteral("数组分量必须位于所选数组的有效分量范围内。"));
+                    return;
+                }
+            }
 
             auto filter = PointLineInterpolatorFilter::New();
             filter->SetInput(input);
@@ -2154,6 +2200,24 @@ void igQtMainWindow::initAllFilters() {
             output->SetLineWidth(3.0f);
             modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
             rendererWidget->update();
+            if (showChart) {
+                auto& plotAttribute = output->GetAttributeSet()->GetAttribute(plotArrayNames[plotArrayIndex]);
+                if (!plotAttribute.IsNone() && plotAttribute.pointer) {
+                    std::vector<double> distances(output->GetNumberOfPoints(), 0.0);
+                    for (IGsize pointId = 1; pointId < output->GetNumberOfPoints(); ++pointId) {
+                        distances[pointId] = distances[pointId - 1] +
+                                             std::sqrt((output->GetPoint(pointId) -
+                                                        output->GetPoint(pointId - 1)).squaredLength());
+                    }
+                    auto* chart = new igQtCharts(this);
+                    chart->setAttribute(Qt::WA_DeleteOnClose);
+                    chart->drawLineChart(plotAttribute.pointer, distances, plotComponent,
+                                         QStringLiteral("沿线距离"));
+                    chart->show();
+                    chart->raise();
+                    chart->activateWindow();
+                }
+            }
             dialog->close();
         });
     });
