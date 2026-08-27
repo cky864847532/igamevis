@@ -14,6 +14,7 @@
 #include "DataProcessing/iGameMeshSimplificationFilter.h"
 #include "DataProcessing/iGameMeshSimplificationFilterPro.h"
 #include "DataProcessing/iGameMeshTriangulationFilter.h"
+#include "DataProcessing/iGameForceStaticMeshFilter.h"
 #include "DataProcessing/Simplification/iGameMeshSaliency.h"
 #include "DataProcessing/Simplification/iGameMeshSimplificationWithAttributes.h"
 
@@ -1558,6 +1559,38 @@ void igQtMainWindow::initAllFilters() {
         surface->SetName(obj->GetName() + "_surface");
         modelTreeWidget->addDataObjectToModelTree(surface, Algorithm);
         rendererWidget->update();
+    });
+
+    connect(mesh_processing->addAction(QStringLiteral("强制静态网格 (Force Static Mesh)")), &QAction::triggered, this, [this](bool) {
+        if (rendererWidget->GetScene() == nullptr
+            || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("请先加载并选择模型。"));
+            return;
+        }
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (obj == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
+            return;
+        }
+        if (iGame::DynamicCast<iGame::PointSet>(obj) == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("当前模型不支持静态网格（需要网格/点集）。"));
+            return;
+        }
+
+        ForceStaticMeshFilter::Pointer filter = ForceStaticMeshFilter::New();
+        filter->SetInput(obj);
+        if (filter->Execute()) {
+            auto out = filter->GetOutput();
+            if (out && out.get() != obj.get()) {
+                out->SetName(obj->GetName() + "_ForceStaticMesh");
+                modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm);
+            }
+            rendererWidget->update();
+            showDarkFramelessMessage(QStringLiteral("完成"),
+                                     QStringLiteral("已生成静态网格缓存（几何固定，仅属性更新）。"));
+        } else {
+            showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("当前对象不支持静态网格转换。"));
+        }
     });
 
     //connect(mesh_processing->addAction("Test"), &QAction::triggered, this, [&](bool checked) {
