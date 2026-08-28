@@ -71,6 +71,7 @@
 #include <IQWidgets/igQtAxisAlignedReflectionWidget.h>
 #include <IQWidgets/igQtPointAndCellIdsWidget.h>
 #include <IQWidgets/igQtModelClipWidget.h>
+#include <IQWidgets/igQtMergeVectorComponentsWidget.h>
 #include <IQWidgets/igQtModelDrawWidget.h>
 #include <IQWidgets/igQtModelInformationWidget.h>
 #include <IQWidgets/igQtParallelCoordinatesWidget.h>
@@ -846,6 +847,7 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_GenerateProcessIds);
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_ExtractEdges);
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_CountCellVertices);
+    this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_MergeVectorComponents);
 
     // 禁止所有 dock 悬浮：去掉 DockWidgetFloatable
     // 同时为了防止“拖拽标题栏就被扯成系统浮动窗”，这里也把 Movable 去掉（只保留可关闭）。
@@ -869,6 +871,7 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     ui->dockWidget_ExtractComponent->setFeatures(QDockWidget::DockWidgetClosable);
     ui->dockWidget_ExtractEdges->setFeatures(QDockWidget::DockWidgetClosable);
     ui->dockWidget_CountCellVertices->setFeatures(QDockWidget::DockWidgetClosable);
+    ui->dockWidget_MergeVectorComponents->setFeatures(QDockWidget::DockWidgetClosable);
 
     QDockWidget* dockWidget_null = new QDockWidget("", this);
     this->addDockWidget(Qt::RightDockWidgetArea, dockWidget_null);
@@ -894,6 +897,8 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     ui->dockWidget_ExtractEdges->hide();
     ui->dockWidget_CountCellVertices->hide();
     
+    ui->dockWidget_MergeVectorComponents->hide();
+
     // Setup default GUI layout.
     // 启用左侧区域的 tab 功能，使左侧 dockwidget 可以通过 tab 切换
     this->setTabPosition(Qt::LeftDockWidgetArea, QTabWidget::North);
@@ -1040,6 +1045,7 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     makeDockWidgetScrollable(ui->dockWidget_GenerateProcessIds);
     makeDockWidgetScrollable(ui->dockWidget_ExtractEdges);
     makeDockWidgetScrollable(ui->dockWidget_CountCellVertices);
+    makeDockWidgetScrollable(ui->dockWidget_MergeVectorComponents);
     makeDockWidgetScrollable(modelTreeWidget->getPropertiesDock());
 
     // 设置左侧 dock 区域的初始宽度（不锁死，用户仍可拖拽调整）
@@ -5248,6 +5254,16 @@ void igQtMainWindow::initAllDockWidgetConnectWithAction() {
         if (!dataObject) return;
         ui->widget_CountCellVertices->SetOriginDataObject(dataObject);
     });
+    connect(ui->action_MergeVectorComponents, &QAction::triggered, this, [this](bool) {
+        openLeftToolPanel(LeftToolPanelId::MergeVectorComponents);
+        auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
+        if (!scene) return;
+        auto CurrentModel = scene->GetCurrentModel();
+        if (!CurrentModel) return;
+        auto dataObject = CurrentModel->GetDataObject();
+        if (!dataObject) return;
+        ui->widget_MergeVectorComponents->SetOriginDataObject(dataObject);
+    });
     connect(ui->action_GenerateChart, &QAction::triggered, this, [&](bool checked) {
         auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
         if (!scene) return;
@@ -5544,6 +5560,7 @@ QDockWidget* igQtMainWindow::shellDockForLeftPanel(LeftToolPanelId id) const {
     case LeftToolPanelId::DataChange: return ui->dockWidget_DataChangeField;
     case LeftToolPanelId::ExtractComponent: return ui->dockWidget_ExtractComponent;
     case LeftToolPanelId::ExtractCellsByType: return m_extractCellsByTypeShell;
+    case LeftToolPanelId::MergeVectorComponents: return ui->dockWidget_MergeVectorComponents;
     case LeftToolPanelId::Count: return nullptr;
     }
     return nullptr;
@@ -5664,6 +5681,10 @@ void igQtMainWindow::openLeftToolPanel(LeftToolPanelId id) {
     case LeftToolPanelId::ExtractCellsByType:
         relocateContentToLeftTab(m_extractCellsByTypeShell, m_extractCellsByTypeWidget,
                                  QStringLiteral("按单元类型提取"), id, false);
+        break;
+    case LeftToolPanelId::MergeVectorComponents:
+        relocateContentToLeftTab(ui->dockWidget_MergeVectorComponents, ui->widget_MergeVectorComponents,
+                                 QStringLiteral("合并标量数组为向量"), id, false);
         break;
     case LeftToolPanelId::Count:
         break;
