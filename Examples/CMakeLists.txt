@@ -352,6 +352,11 @@ igame_add_example(
     Filter/GlobalIds/TestGenerateGlobalIds.cpp
 )
 
+# Periodic
+igame_add_example(testAngularPeriodic Filter/Periodic/TestAngularPeriodic.cpp)
+set_target_properties(testAngularPeriodic PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
 get_property(IGAME_EXAMPLE_TARGETS DIRECTORY PROPERTY IGAME_EXAMPLE_TARGETS)
 if (NOT IGAME_EXAMPLE_TARGETS)
     set(IGAME_EXAMPLE_TARGETS "")
