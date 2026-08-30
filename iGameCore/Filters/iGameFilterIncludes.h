@@ -10,6 +10,7 @@
 #include "MeshCodec/iGameMeshEncoderFilter.h"
 #include "ModelSurface/iGameModelGeometryFilter.h"
 #include "ParallelCoordinates/iGameGenerateParallelCoordinatesData.h"
+#include "Periodic/iGameAngularPeriodicFilter.h"
 #include "PlotLine/iGameGeneratePlotLineDataFilter.h"
 #include "Selection/iGameGetCellsInFrustumFilter.h"
 #include "Selection/iGameGetClosestCellsInLineFilter.h"
