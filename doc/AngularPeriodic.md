@@ -54,14 +54,6 @@ rendering window.
 The same model was processed in iGameVis and ParaView. The resulting merged
 meshes are consistent.
 
-### iGameVis result
-
-![Angular Periodic result in iGameVis](images/AngularPeriodic_iGameVis.png)
-
-### ParaView reference
-
-![Angular Periodic reference in ParaView](images/AngularPeriodic_ParaView.png)
-
 ## Logging
 
 The filter logs missing input, an invalid rotation axis or copy count and
