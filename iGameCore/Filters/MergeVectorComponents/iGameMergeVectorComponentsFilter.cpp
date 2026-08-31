@@ -49,16 +49,24 @@ bool MergeVectorComponentsFilter::Execute() {
             m_Message = "Scalar array name #" + std::to_string(c + 1) + " is empty.";
             return false;
         }
-        auto& attr = attrSet->GetAttribute(name);
-        if (attr.IsNone()) {
-            m_Message = "Scalar array not found: \"" + name + "\".";
+        // Look up by name AND attachment: same-named scalars can exist in both
+        // PointData and CellData, and a name-only lookup returns the first match.
+        int attrIdx = -1;
+        for (int i = 0; i < static_cast<int>(attrSet->GetNumberOfAttributes()); ++i) {
+            auto& a = attrSet->GetAttribute(i);
+            if (a.IsNone()) continue;
+            if (a.attachmentType == m_AttachmentType && a.pointer->GetName() == name) {
+                attrIdx = i;
+                break;
+            }
+        }
+        if (attrIdx < 0) {
+            m_Message = "Scalar array not found in " +
+                        std::string(m_AttachmentType == IG_POINT ? "PointData" : "CellData") +
+                        ": \"" + name + "\".";
             return false;
         }
-        if (attr.attachmentType != m_AttachmentType) {
-            m_Message = "Array \"" + name + "\" assignment does not match target ("
-                        + (m_AttachmentType == IG_POINT ? "PointData" : "CellData") + ").";
-            return false;
-        }
+        auto& attr = attrSet->GetAttribute(attrIdx);
         if (attr.type != IG_SCALAR) {
             m_Message = "Array \"" + name + "\" is not a scalar (IG_SCALAR).";
             return false;
@@ -92,12 +100,14 @@ bool MergeVectorComponentsFilter::Execute() {
         comps.push_back(attr.pointer);
     }
 
-    // Output vector name: default "vector"; delete any existing same-named attribute (any
-    // attachment) so re-running replaces it
+    // Output vector name: default "vector"; delete any existing same-named attribute under
+    // the same attachment so re-running replaces it (point/cell vectors coexist independently)
     std::string outName = m_OutputName.empty() ? std::string("vector") : m_OutputName;
     for (int i = 0; i < static_cast<int>(attrSet->GetNumberOfAttributes()); ++i) {
         auto& a = attrSet->GetAttribute(i);
-        if (!a.IsNone() && a.pointer && a.pointer->GetName() == outName) {
+        if (!a.IsNone() && a.pointer
+            && a.attachmentType == m_AttachmentType
+            && a.pointer->GetName() == outName) {
             attrSet->DeleteAttribute(i);
         }
     }
