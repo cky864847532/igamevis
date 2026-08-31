@@ -217,6 +217,9 @@ igame_add_example(testSetRenderingPressure Rendering/SetRenderingPressure.cpp)
 igame_add_example(testChangeRange Attribute/TestSubDataRangeChangeAndRecollect.cpp)
 igame_add_example(testPointCoordinates Filter/PointCoordinates/TestPointCoordinates.cpp)
 
+# Interpolation
+igame_add_example(testPointLineInterpolator Filter/Interpolation/TestPointLineInterpolator.cpp)
+
 # Vector / Tensor
 igame_add_example(testVector Filter/Vector/TestVector.cpp)
 igame_add_example(testTimeVaryingVector Filter/Vector/TestTimeVaryingVector.cpp)
