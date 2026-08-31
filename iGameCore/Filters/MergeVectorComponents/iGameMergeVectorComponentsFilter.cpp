@@ -49,8 +49,7 @@ bool MergeVectorComponentsFilter::Execute() {
             m_Message = "Scalar array name #" + std::to_string(c + 1) + " is empty.";
             return false;
         }
-        // Look up by name AND attachment: same-named scalars can exist in both
-        // PointData and CellData, and a name-only lookup returns the first match.
+        // Look up by name AND attachment
         int attrIdx = -1;
         for (int i = 0; i < static_cast<int>(attrSet->GetNumberOfAttributes()); ++i) {
             auto& a = attrSet->GetAttribute(i);
