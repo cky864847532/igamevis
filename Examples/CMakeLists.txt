@@ -218,7 +218,7 @@ igame_add_example(testChangeRange Attribute/TestSubDataRangeChangeAndRecollect.c
 igame_add_example(testPointCoordinates Filter/PointCoordinates/TestPointCoordinates.cpp)
 
 # Interpolation
-igame_add_example(testPointLineInterpolator Filter/Interpolation/TestPointLineInterpolator.cpp)
+igame_add_example(testPointLineInterpolator Filter/PointLineInterpolator/TestPointLineInterpolator.cpp)
 if (TARGET Qt_module)
     igame_add_example(testPointLineChart Qt/TestPointLineChart.cpp)
     target_link_libraries(testPointLineChart PRIVATE Qt_module)

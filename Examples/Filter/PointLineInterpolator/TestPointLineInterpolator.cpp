@@ -1,4 +1,4 @@
-#include <Interpolation/iGamePointLineInterpolatorFilter.h>
+#include <PointLineInterpolator/iGamePointLineInterpolatorFilter.h>
 #include <iGameAttributeSet.h>
 #include <iGameFlatArray.h>
 #include <iGamePointSet.h>

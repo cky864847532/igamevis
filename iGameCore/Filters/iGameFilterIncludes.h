@@ -44,4 +44,4 @@
 #include "BoundaryMeshQuality/iGameBoundaryMeshQualityFilter.h"
 #include "PassArrays/iGamePassArraysFilter.h"
 #include "ProcessGet/iGameGenerateProcessIdsFilter.h"
-#include "Interpolation/iGamePointLineInterpolatorFilter.h"
+#include "PointLineInterpolator/iGamePointLineInterpolatorFilter.h"
