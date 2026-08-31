@@ -2065,44 +2065,44 @@ void igQtMainWindow::initAllFilters() {
         dialog->setFilterTitle(QStringLiteral("点线插值"));
         dialog->setFilterDescription(
                 QStringLiteral("按照 ParaView Point Line Interpolator 的方式，将输入点属性插值到参数化线段。"
-                               "Resolution 表示线段数，输出点数为 Resolution + 1。"));
+                               "分辨率表示线段数，输出点数为分辨率 + 1。"));
         const int point1XId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point1 X"), QString::number(point1[0], 'g', 12));
+                                                   QStringLiteral("起点 X"), QString::number(point1[0], 'g', 12));
         const int point1YId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point1 Y"), QString::number(point1[1], 'g', 12));
+                                                   QStringLiteral("起点 Y"), QString::number(point1[1], 'g', 12));
         const int point1ZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point1 Z"), QString::number(point1[2], 'g', 12));
+                                                   QStringLiteral("起点 Z"), QString::number(point1[2], 'g', 12));
         const int point2XId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point2 X"), QString::number(point2[0], 'g', 12));
+                                                   QStringLiteral("终点 X"), QString::number(point2[0], 'g', 12));
         const int point2YId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point2 Y"), QString::number(point2[1], 'g', 12));
+                                                   QStringLiteral("终点 Y"), QString::number(point2[1], 'g', 12));
         const int point2ZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Point2 Z"), QString::number(point2[2], 'g', 12));
+                                                   QStringLiteral("终点 Z"), QString::number(point2[2], 'g', 12));
         const int resolutionId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                       QStringLiteral("Resolution"), QStringLiteral("100"));
+                                                       QStringLiteral("分辨率（线段数）"), QStringLiteral("100"));
         const int kernelId = dialog->addParameter(
-                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("Kernel"),
-                std::vector<QString>{QStringLiteral("Voronoi"), QStringLiteral("Gaussian"),
-                                     QStringLiteral("Shepard")});
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("插值核函数"),
+                std::vector<QString>{QStringLiteral("Voronoi（最近邻）"), QStringLiteral("Gaussian（高斯）"),
+                                     QStringLiteral("Shepard（反距离加权）")});
         const int footprintId = dialog->addParameter(
-                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("Kernel Footprint"),
-                std::vector<QString>{QStringLiteral("Radius"), QStringLiteral("N Closest")});
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("邻域方式"),
+                std::vector<QString>{QStringLiteral("指定半径"), QStringLiteral("最近 N 点")});
         const int radiusId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                   QStringLiteral("Radius"),
+                                                   QStringLiteral("邻域半径"),
                                                    QString::number(defaultRadius, 'g', 12));
         const int numberOfPointsId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                           QStringLiteral("Number Of Points"), QStringLiteral("8"));
+                                                           QStringLiteral("邻近点数量"), QStringLiteral("8"));
         const int sharpnessId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                      QStringLiteral("Gaussian Sharpness"), QStringLiteral("2"));
+                                                      QStringLiteral("高斯锐度"), QStringLiteral("2"));
         const int powerId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                  QStringLiteral("Shepard Power"), QStringLiteral("2"));
+                                                  QStringLiteral("Shepard 幂指数"), QStringLiteral("2"));
         const int nullStrategyId = dialog->addParameter(
-                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("Null Points Strategy"),
-                std::vector<QString>{QStringLiteral("Mask Points"), QStringLiteral("Null Value"),
-                                     QStringLiteral("Closest Point")});
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("无邻域点处理方式"),
+                std::vector<QString>{QStringLiteral("屏蔽采样点"), QStringLiteral("使用空值"),
+                                     QStringLiteral("使用最近点")});
         if (auto* combo = qobject_cast<QComboBox*>(dialog->getWidget(nullStrategyId))) combo->setCurrentIndex(2);
         const int nullValueId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
-                                                      QStringLiteral("Null Value"), QStringLiteral("0"));
+                                                      QStringLiteral("空值"), QStringLiteral("0"));
         const bool hasPlotArrays = !plotArrayNames.empty();
         const int showChartId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
                                                       QStringLiteral("显示沿线曲线"),
@@ -2132,16 +2132,16 @@ void igQtMainWindow::initAllFilters() {
             };
             double point1X{}, point1Y{}, point1Z{}, point2X{}, point2Y{}, point2Z{};
             double radius{}, sharpness{}, power{}, nullValue{};
-            if (!readDouble(point1XId, QStringLiteral("Point1 X"), point1X) ||
-                !readDouble(point1YId, QStringLiteral("Point1 Y"), point1Y) ||
-                !readDouble(point1ZId, QStringLiteral("Point1 Z"), point1Z) ||
-                !readDouble(point2XId, QStringLiteral("Point2 X"), point2X) ||
-                !readDouble(point2YId, QStringLiteral("Point2 Y"), point2Y) ||
-                !readDouble(point2ZId, QStringLiteral("Point2 Z"), point2Z) ||
-                !readDouble(radiusId, QStringLiteral("Radius"), radius) ||
-                !readDouble(sharpnessId, QStringLiteral("Gaussian Sharpness"), sharpness) ||
-                !readDouble(powerId, QStringLiteral("Shepard Power"), power) ||
-                !readDouble(nullValueId, QStringLiteral("Null Value"), nullValue)) {
+            if (!readDouble(point1XId, QStringLiteral("起点 X"), point1X) ||
+                !readDouble(point1YId, QStringLiteral("起点 Y"), point1Y) ||
+                !readDouble(point1ZId, QStringLiteral("起点 Z"), point1Z) ||
+                !readDouble(point2XId, QStringLiteral("终点 X"), point2X) ||
+                !readDouble(point2YId, QStringLiteral("终点 Y"), point2Y) ||
+                !readDouble(point2ZId, QStringLiteral("终点 Z"), point2Z) ||
+                !readDouble(radiusId, QStringLiteral("邻域半径"), radius) ||
+                !readDouble(sharpnessId, QStringLiteral("高斯锐度"), sharpness) ||
+                !readDouble(powerId, QStringLiteral("Shepard 幂指数"), power) ||
+                !readDouble(nullValueId, QStringLiteral("空值"), nullValue)) {
                 return;
             }
 
@@ -2149,13 +2149,13 @@ void igQtMainWindow::initAllFilters() {
             const int resolution = dialog->getInt(resolutionId, ok);
             if (!ok || resolution < 1) {
                 showDarkFramelessMessage(QStringLiteral("参数错误"),
-                                         QStringLiteral("Resolution 必须是大于等于 1 的整数。"));
+                                         QStringLiteral("分辨率必须是大于等于 1 的整数。"));
                 return;
             }
             const int numberOfPoints = dialog->getInt(numberOfPointsId, ok);
             if (!ok || numberOfPoints < 1) {
                 showDarkFramelessMessage(QStringLiteral("参数错误"),
-                                         QStringLiteral("Number Of Points 必须是大于等于 1 的整数。"));
+                                         QStringLiteral("邻近点数量必须是大于等于 1 的整数。"));
                 return;
             }
             const int kernel = dialog->getComboIndex(kernelId, ok);
