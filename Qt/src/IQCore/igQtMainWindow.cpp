@@ -3178,6 +3178,32 @@ void igQtMainWindow::initAllFilters() {
             return;
         }
 
+        auto input = scene->GetCurrentModel()->GetDataObject();
+        if (input.IsNull()) {
+            igDebug("[CountCellFaces UI] Current model has no data object; Execute was not called.");
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
+            return;
+        }
+
+        const int previousAttributeIndex = input->GetAttributeIndex();
+        CountCellFacesFilter::Pointer filter = CountCellFacesFilter::New();
+        filter->SetInput(input);
+        if (!filter->Execute()) {
+            showDarkFramelessMessage(QStringLiteral("执行失败"), QString::fromStdString(filter->GetMessage()));
+            return;
+        }
+
+        modelTreeWidget->updateAllAttriubute(input);
+        if (auto* item = modelTreeWidget->getItemFromObject(input)) {
+            item->setExpanded(true);
+            if (previousAttributeIndex >= 0 && previousAttributeIndex < item->childCount()) {
+                item->viewAttribute(previousAttributeIndex, -1);
+            }
+        }
+        ui->widget_SearchInfo->setCurrentModel(scene->GetCurrentModel());
+        rendererWidget->update();
+    });
+
     // 转换为顶点单元：直接作为「算法处理」一级菜单项，点击即调用 ConvertToVertexFilter。
     connect(ui->menu_filters->addAction(QStringLiteral("转换为顶点单元 (Convert To Vertex)")), &QAction::triggered, this, [&](bool checked) {
         if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
@@ -3191,13 +3217,7 @@ void igQtMainWindow::initAllFilters() {
         }
     });
 
-        auto input = scene->GetCurrentModel()->GetDataObject();
-        if (input.IsNull()) {
-            igDebug("[CountCellFaces UI] Current model has no data object; Execute was not called.");
-            showDarkFramelessMessage(QStringLiteral("无可用模型"),
-                                     QStringLiteral("当前模型没有可用数据。"));
-            return;
-        }
+        
 
     // 新增mesh_quality综合网格质量评估
     QAction* meshQualityAction =ui->menu_filters->addAction(QStringLiteral("网格质量评估 (MeshQuality)"));
@@ -3417,26 +3437,8 @@ void igQtMainWindow::initAllFilters() {
         });
     });
 
-    QMenu* view = ui->menu_filters->addMenu("特征提取");
-        const int previousAttributeIndex = input->GetAttributeIndex();
-        CountCellFacesFilter::Pointer filter = CountCellFacesFilter::New();
-        filter->SetInput(input);
-        if (!filter->Execute()) {
-            showDarkFramelessMessage(QStringLiteral("执行失败"),
-                                     QString::fromStdString(filter->GetMessage()));
-            return;
-        }
-
-        modelTreeWidget->updateAllAttriubute(input);
-        if (auto* item = modelTreeWidget->getItemFromObject(input)) {
-            item->setExpanded(true);
-            if (previousAttributeIndex >= 0 && previousAttributeIndex < item->childCount()) {
-                item->viewAttribute(previousAttributeIndex, -1);
-            }
-        }
-        ui->widget_SearchInfo->setCurrentModel(scene->GetCurrentModel());
-        rendererWidget->update();
-    });
+    
+        
 
     // 提取分量 (Extract Component)：从多分量数组（向量/张量）提取单个分量生成标量属性，
     // 打开左侧工具面板（继承语义：首次执行新增模型树节点，再次执行更新结果节点）
@@ -3542,7 +3544,7 @@ void igQtMainWindow::initAllFilters() {
         });
     });
 
-    QMenu* view = ui->menu_filters->addMenu("特征提取");
+    
     connect(ui->widget_ExtractComponent, &igQtExtractComponentWidget::DrawExtractComponentModel, this,
             [this](iGame::DataObject::Pointer res) {
                 modelTreeWidget->addDataObjectToModelTree(res, ItemSource::Algorithm);
