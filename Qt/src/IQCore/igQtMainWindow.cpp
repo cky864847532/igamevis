@@ -102,6 +102,9 @@
 #include <Tests/iGameVolumeMeshFilterTest.h>
 #include <VolumeMeshAlgorithm/iGameVolumeMeshClipper.h>
 #include <fcntl.h>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <iGameBoxStyle.h>
 #include <iGameCtxPresObjData.h>
 #include <iGameDataSource.h>
@@ -2762,6 +2765,207 @@ void igQtMainWindow::initAllFilters() {
                 modelTreeWidget->addDataObjectToModelTree(filter->GetOutput(), Algorithm);
                 rendererWidget->update();
             });
+    connect(ui->menu_filters->addAction(QStringLiteral("点线插值 (Point Line Interpolator)")),
+            &QAction::triggered, this, [this](bool) {
+        auto* scene = rendererWidget ? rendererWidget->GetScene() : nullptr;
+        auto currentModel = scene ? scene->GetCurrentModel() : Model::Pointer{};
+        auto input = currentModel ? currentModel->GetDataObject() : nullptr;
+        if (!input || !input->GetPoints() || input->GetPoints()->GetNumberOfPoints() == 0) {
+            showDarkFramelessMessage(QStringLiteral("无可用点数据"),
+                                     QStringLiteral("请先加载并选择一个包含点的模型。"));
+            return;
+        }
+
+        const auto bounds = input->GetBoundingBox();
+        Point point1 = bounds.min;
+        Point point2 = bounds.max;
+        if ((point2 - point1).squaredLength() <= std::numeric_limits<double>::epsilon()) {
+            point1 = Point(-0.5, 0.0, 0.0);
+            point2 = Point(0.5, 0.0, 0.0);
+        }
+        const double defaultRadius = std::max(bounds.diag() * 0.1, 1.0e-6);
+
+        std::vector<std::string> plotArrayNames;
+        std::vector<int> plotArrayDimensions;
+        std::vector<QString> plotArrayLabels;
+        if (auto attributes = input->GetAttributeSet()) {
+            const IGsize inputPointCount = input->GetPoints()->GetNumberOfPoints();
+            for (IGsize attributeId = 0; attributeId < attributes->GetNumberOfAttributes(); ++attributeId) {
+                auto& attribute = attributes->GetAttribute(attributeId);
+                if (attribute.IsDeleted() || attribute.attachmentType != IG_POINT || !attribute.pointer ||
+                    attribute.pointer->GetName().empty() ||
+                    attribute.pointer->GetNumberOfElements() != inputPointCount) {
+                    continue;
+                }
+                plotArrayNames.push_back(attribute.pointer->GetName());
+                plotArrayDimensions.push_back(attribute.pointer->GetDimension());
+                plotArrayLabels.push_back(QString::fromStdString(attribute.pointer->GetName()) +
+                                          QStringLiteral(" (%1 分量)").arg(attribute.pointer->GetDimension()));
+            }
+        }
+
+        auto* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setFilterTitle(QStringLiteral("点线插值"));
+        dialog->setFilterDescription(
+                QStringLiteral("按照 ParaView Point Line Interpolator 的方式，将输入点属性插值到参数化线段。"
+                               "分辨率表示线段数，输出点数为分辨率 + 1。"));
+        const int point1XId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("起点 X"), QString::number(point1[0], 'g', 12));
+        const int point1YId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("起点 Y"), QString::number(point1[1], 'g', 12));
+        const int point1ZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("起点 Z"), QString::number(point1[2], 'g', 12));
+        const int point2XId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("终点 X"), QString::number(point2[0], 'g', 12));
+        const int point2YId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("终点 Y"), QString::number(point2[1], 'g', 12));
+        const int point2ZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("终点 Z"), QString::number(point2[2], 'g', 12));
+        const int resolutionId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                       QStringLiteral("分辨率（线段数）"), QStringLiteral("100"));
+        const int kernelId = dialog->addParameter(
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("插值核函数"),
+                std::vector<QString>{QStringLiteral("Voronoi（最近邻）"), QStringLiteral("Gaussian（高斯）"),
+                                     QStringLiteral("Shepard（反距离加权）")});
+        const int footprintId = dialog->addParameter(
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("邻域方式"),
+                std::vector<QString>{QStringLiteral("指定半径"), QStringLiteral("最近 N 点")});
+        const int radiusId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                   QStringLiteral("邻域半径"),
+                                                   QString::number(defaultRadius, 'g', 12));
+        const int numberOfPointsId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                           QStringLiteral("邻近点数量"), QStringLiteral("8"));
+        const int sharpnessId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("高斯锐度"), QStringLiteral("2"));
+        const int powerId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                  QStringLiteral("Shepard 幂指数"), QStringLiteral("2"));
+        const int nullStrategyId = dialog->addParameter(
+                igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("无邻域点处理方式"),
+                std::vector<QString>{QStringLiteral("屏蔽采样点"), QStringLiteral("使用空值"),
+                                     QStringLiteral("使用最近点")});
+        if (auto* combo = qobject_cast<QComboBox*>(dialog->getWidget(nullStrategyId))) combo->setCurrentIndex(2);
+        const int nullValueId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("空值"), QStringLiteral("0"));
+        const bool hasPlotArrays = !plotArrayNames.empty();
+        const int showChartId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                                                      QStringLiteral("显示沿线曲线"),
+                                                      hasPlotArrays ? QStringLiteral("true") : QStringLiteral("false"));
+        if (!hasPlotArrays) plotArrayLabels.push_back(QStringLiteral("无可用点属性数组"));
+        const int plotArrayId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,
+                                                      QStringLiteral("曲线数组"), plotArrayLabels);
+        const int plotComponentId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                          QStringLiteral("数组分量"), QStringLiteral("0"));
+        if (!hasPlotArrays) {
+            if (auto* widget = dialog->getWidget(showChartId)) widget->setEnabled(false);
+            if (auto* widget = dialog->getWidget(plotArrayId)) widget->setEnabled(false);
+            if (auto* widget = dialog->getWidget(plotComponentId)) widget->setEnabled(false);
+        }
+
+        dialog->show();
+        dialog->setApplyFunctor([=, this]() {
+            auto readDouble = [dialog](int id, const QString& label, double& value) {
+                bool ok = false;
+                value = dialog->getDouble(id, ok);
+                if (!ok || !std::isfinite(value)) {
+                    igQtShowDarkFramelessMessage(dialog, QStringLiteral("参数错误"),
+                                                 label + QStringLiteral(" 必须是有效数字。"));
+                    return false;
+                }
+                return true;
+            };
+            double point1X{}, point1Y{}, point1Z{}, point2X{}, point2Y{}, point2Z{};
+            double radius{}, sharpness{}, power{}, nullValue{};
+            if (!readDouble(point1XId, QStringLiteral("起点 X"), point1X) ||
+                !readDouble(point1YId, QStringLiteral("起点 Y"), point1Y) ||
+                !readDouble(point1ZId, QStringLiteral("起点 Z"), point1Z) ||
+                !readDouble(point2XId, QStringLiteral("终点 X"), point2X) ||
+                !readDouble(point2YId, QStringLiteral("终点 Y"), point2Y) ||
+                !readDouble(point2ZId, QStringLiteral("终点 Z"), point2Z) ||
+                !readDouble(radiusId, QStringLiteral("邻域半径"), radius) ||
+                !readDouble(sharpnessId, QStringLiteral("高斯锐度"), sharpness) ||
+                !readDouble(powerId, QStringLiteral("Shepard 幂指数"), power) ||
+                !readDouble(nullValueId, QStringLiteral("空值"), nullValue)) {
+                return;
+            }
+
+            bool ok = false;
+            const int resolution = dialog->getInt(resolutionId, ok);
+            if (!ok || resolution < 1) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),
+                                         QStringLiteral("分辨率必须是大于等于 1 的整数。"));
+                return;
+            }
+            const int numberOfPoints = dialog->getInt(numberOfPointsId, ok);
+            if (!ok || numberOfPoints < 1) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),
+                                         QStringLiteral("邻近点数量必须是大于等于 1 的整数。"));
+                return;
+            }
+            const int kernel = dialog->getComboIndex(kernelId, ok);
+            const int footprint = dialog->getComboIndex(footprintId, ok);
+            const int nullStrategy = dialog->getComboIndex(nullStrategyId, ok);
+            const bool showChart = dialog->getChecked(showChartId, ok);
+            int plotArrayIndex = -1;
+            int plotComponent = 0;
+            if (showChart) {
+                plotArrayIndex = dialog->getComboIndex(plotArrayId, ok);
+                plotComponent = dialog->getInt(plotComponentId, ok);
+                if (!ok || plotArrayIndex < 0 || plotArrayIndex >= static_cast<int>(plotArrayNames.size()) ||
+                    plotComponent < 0 || plotComponent >= plotArrayDimensions[plotArrayIndex]) {
+                    showDarkFramelessMessage(QStringLiteral("参数错误"),
+                                             QStringLiteral("数组分量必须位于所选数组的有效分量范围内。"));
+                    return;
+                }
+            }
+
+            auto filter = PointLineInterpolatorFilter::New();
+            filter->SetInput(input);
+            filter->SetPoint1(Point(point1X, point1Y, point1Z));
+            filter->SetPoint2(Point(point2X, point2Y, point2Z));
+            filter->SetResolution(resolution);
+            filter->SetKernelType(static_cast<PointLineInterpolatorFilter::KernelType>(kernel));
+            filter->SetKernelFootprint(static_cast<PointLineInterpolatorFilter::KernelFootprint>(footprint));
+            filter->SetRadius(radius);
+            filter->SetNumberOfPoints(numberOfPoints);
+            filter->SetSharpness(sharpness);
+            filter->SetPowerParameter(power);
+            filter->SetNullPointsStrategy(
+                    static_cast<PointLineInterpolatorFilter::NullPointsStrategy>(nullStrategy));
+            filter->SetNullValue(nullValue);
+            if (!filter->Execute() || !filter->GetLineOutput()) {
+                showDarkFramelessMessage(QStringLiteral("执行失败"),
+                                         QStringLiteral("请检查核函数参数以及当前模型的点属性。"));
+                return;
+            }
+
+            auto output = filter->GetLineOutput();
+            output->SetViewStyle(IG_WIREFRAME);
+            output->SetLineWidth(3.0f);
+            modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
+            rendererWidget->update();
+            if (showChart) {
+                auto& plotAttribute = output->GetAttributeSet()->GetAttribute(plotArrayNames[plotArrayIndex]);
+                if (!plotAttribute.IsNone() && plotAttribute.pointer) {
+                    std::vector<double> distances(output->GetNumberOfPoints(), 0.0);
+                    for (IGsize pointId = 1; pointId < output->GetNumberOfPoints(); ++pointId) {
+                        distances[pointId] = distances[pointId - 1] +
+                                             std::sqrt((output->GetPoint(pointId) -
+                                                        output->GetPoint(pointId - 1)).squaredLength());
+                    }
+                    auto* chart = new igQtCharts(this);
+                    chart->setAttribute(Qt::WA_DeleteOnClose);
+                    chart->drawLineChart(plotAttribute.pointer, distances, plotComponent,
+                                         QStringLiteral("沿线距离"));
+                    chart->show();
+                    chart->raise();
+                    chart->activateWindow();
+                }
+            }
+            dialog->close();
+        });
+    });
+
     QMenu* convert = ui->menu_filters->addMenu(QStringLiteral("数据转换 (Convert)"));
     connect(convert->addAction(QStringLiteral("转换为点数据 (Convert To PointData)")), &QAction::triggered, this,
             [&](bool checked) {

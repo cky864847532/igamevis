@@ -61,5 +61,6 @@
 #include "BoundaryMeshQuality/iGameBoundaryMeshQualityFilter.h"
 #include "PassArrays/iGamePassArraysFilter.h"
 #include "ProcessGet/iGameGenerateProcessIdsFilter.h"
+#include "PointLineInterpolator/iGamePointLineInterpolatorFilter.h"
 
 #include "AppendReduce/iGameAppendReduceFilter.h"

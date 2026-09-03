@@ -218,6 +218,13 @@ igame_add_example(testChangeRange Attribute/TestSubDataRangeChangeAndRecollect.c
 igame_add_example(testPointCoordinates Filter/PointCoordinates/TestPointCoordinates.cpp)
 igame_add_example(testPointAndCellIds Filter/PointAndCellIds/TestPointAndCellIds.cpp)
 
+# Interpolation
+igame_add_example(testPointLineInterpolator Filter/PointLineInterpolator/TestPointLineInterpolator.cpp)
+if (TARGET Qt_module)
+    igame_add_example(testPointLineChart Qt/TestPointLineChart.cpp)
+    target_link_libraries(testPointLineChart PRIVATE Qt_module)
+endif ()
+
 # Vector / Tensor
 igame_add_example(testVector Filter/Vector/TestVector.cpp)
 igame_add_example(testTimeVaryingVector Filter/Vector/TestTimeVaryingVector.cpp)
