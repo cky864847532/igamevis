@@ -3,7 +3,9 @@
 // Created by m_ky on 2024/4/10.
 //
 
+#include "ModelSurface/iGameMultiBlockGeometryFilter.h"
 #include "BoundaryMeshQuality/iGameBoundaryMeshQualityFilter.h"
+#include "MeshMetrics/iGameCellMeshMetricsFilter.h"
 #include "MeshMetrics/iGameVolumeMeshMetricsFilter.h"
 #include "Deformation/iGameStressDeformationFilterCode.h"
 
@@ -28,6 +30,9 @@
 #include "Convert/iGameConvertToPointDataFilter.h"
 #include "Convert/iGameConvertToSurfaceMeshFilter.h"
 #include "Convert/iGameConvertToVolumeMeshFilter.h"
+#include "MeshQuality/iGameMeshQualityFilter.h"
+
+#include "Transformation/iGameTransformFilter.h"
 
 #include "MyFilter/iGameExtractCellsByTypeFilter.h"
 #include "FeatureExtraction/iGameFeatureEdgesFilter.h"
@@ -46,6 +51,8 @@
 
 #include "iGameFileIO.h"
 #include "iGameFilterIncludes.h"
+#include "Elevation/iGameElevationFilter.h"
+#include "Shrink/iGameShrinkFilter.h"
 #include "GhostCell/iGameGhostCellFilter.h"
 #include <IQComponents/igQtFilterDialogDockWidget.h>
 #include <IQComponents/igQtModelDialogWidget.h>
@@ -57,8 +64,12 @@
 #include <IQWidgets/igQtAiChat/igQtCommandManager.h>
 #include <IQWidgets/igQtCharts.h>
 #include <IQWidgets/igQtDeformationWidget.h>
+#include <IQWidgets/igQtExtractLocationWidget.h>
 #include <IQWidgets/igQtGlobalIdWidget.h>
+#include <IQWidgets/igQtTriangleStripWidget.h>
 #include <IQWidgets/igQtExtractCellsByTypeWidget.h>
+#include <IQWidgets/igQtAxisAlignedReflectionWidget.h>
+#include <IQWidgets/igQtPointAndCellIdsWidget.h>
 #include <IQWidgets/igQtModelClipWidget.h>
 #include <IQWidgets/igQtModelDrawWidget.h>
 #include <IQWidgets/igQtModelInformationWidget.h>
@@ -86,6 +97,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QScrollArea>
+#include <AttributeManipulation/iGameRandomVectorsFilter.h>
 #include <Sources/iGameLineTypePointsSourceFilter.h>
 #include <Tests/iGameVolumeMeshFilterTest.h>
 #include <VolumeMeshAlgorithm/iGameVolumeMeshClipper.h>
@@ -123,11 +135,23 @@
 #include <QStyle>
 #include <QFontMetrics>
 #include <QSettings>
+#include <QComboBox>
 #include <QDialog>
 #include <QLineEdit>
 #include <QFormLayout>
 #include <QDialogButtonBox>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
+#include <QLabel>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QGroupBox>
+#include <QHeaderView>
+#include <QTableWidget>
+
+#include <algorithm>
+#include <limits>
+#include <memory>
 
 #include "AppendLocationAttribute/iGameAppendLocationAttribute.h"
 
@@ -818,7 +842,10 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     this->addDockWidget(Qt::BottomDockWidgetArea, ui->dockWidget_Animation);
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_ModelList);
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_ContourExtract);
+    this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_ExtractComponent);
     this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_GenerateProcessIds);
+    this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_ExtractEdges);
+    this->addDockWidget(Qt::LeftDockWidgetArea, ui->dockWidget_CountCellVertices);
 
     // 禁止所有 dock 悬浮：去掉 DockWidgetFloatable
     // 同时为了防止“拖拽标题栏就被扯成系统浮动窗”，这里也把 Movable 去掉（只保留可关闭）。
@@ -839,6 +866,9 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     ui->dockWidget_Animation->setFeatures(QDockWidget::DockWidgetClosable);
     ui->dockWidget_ModelList->setFeatures(QDockWidget::DockWidgetClosable);
     ui->dockWidget_ContourExtract->setFeatures(QDockWidget::DockWidgetClosable);
+    ui->dockWidget_ExtractComponent->setFeatures(QDockWidget::DockWidgetClosable);
+    ui->dockWidget_ExtractEdges->setFeatures(QDockWidget::DockWidgetClosable);
+    ui->dockWidget_CountCellVertices->setFeatures(QDockWidget::DockWidgetClosable);
 
     QDockWidget* dockWidget_null = new QDockWidget("", this);
     this->addDockWidget(Qt::RightDockWidgetArea, dockWidget_null);
@@ -859,7 +889,10 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     ui->dockWidget_Animation->hide();
     ui->dockWidget_ModelList->hide();
     ui->dockWidget_ContourExtract->hide();
+    ui->dockWidget_ExtractComponent->hide();
     ui->dockWidget_GenerateProcessIds->hide();
+    ui->dockWidget_ExtractEdges->hide();
+    ui->dockWidget_CountCellVertices->hide();
     
     // Setup default GUI layout.
     // 启用左侧区域的 tab 功能，使左侧 dockwidget 可以通过 tab 切换
@@ -881,6 +914,59 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     connect(GlobalIdDockWidget, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         if (!visible && GlobalIdWidget) GlobalIdWidget->resetOffsets();
     });
+    TriangleStripDockWidget = igQtTriangleStripWidget::createDockWidget(this);
+    TriangleStripWidget = TriangleStripDockWidget->findChild<igQtTriangleStripWidget*>();
+    addDockWidget(Qt::RightDockWidgetArea, TriangleStripDockWidget);
+    TriangleStripDockWidget->hide();
+    connect(TriangleStripWidget, &igQtTriangleStripWidget::resultReady, this,
+            [this](DataObject::Pointer surface, DataObject::Pointer lines) {
+                // Keep the surface as the selected result, and expose boundary
+                // polylines independently instead of treating them as faces.
+                if (lines) { modelTreeWidget->addDataObjectToModelTree(lines, ItemSource::Algorithm); }
+                modelTreeWidget->addDataObjectToModelTree(surface, ItemSource::Algorithm);
+                rendererWidget->update();
+            });
+
+    AxisAlignedReflectionDockWidget =
+        igQtAxisAlignedReflectionWidget::createDockWidget(this);
+    AxisAlignedReflectionWidget =
+        qobject_cast<igQtAxisAlignedReflectionWidget*>(
+                AxisAlignedReflectionDockWidget->widget());
+    this->addDockWidget(
+        Qt::RightDockWidgetArea,
+        AxisAlignedReflectionDockWidget);
+    AxisAlignedReflectionDockWidget->resize(360, 300);
+    AxisAlignedReflectionDockWidget->hide();
+    // 初始化点与单元 ID 参数面板
+    PointAndCellIdsDockWidget = igQtPointAndCellIdsWidget::createDockWidget(this);
+    PointAndCellIdsWidget = qobject_cast<igQtPointAndCellIdsWidget*>(PointAndCellIdsDockWidget->widget());
+
+    this->addDockWidget(Qt::RightDockWidgetArea, PointAndCellIdsDockWidget);
+    PointAndCellIdsDockWidget->resize(400, 300);
+    PointAndCellIdsDockWidget->hide();
+
+    connect(PointAndCellIdsWidget,
+        &igQtPointAndCellIdsWidget::cancelRequested,
+        PointAndCellIdsDockWidget,
+        &QDockWidget::hide);
+
+    // Filter 完成后刷新模型属性和渲染
+    connect(PointAndCellIdsWidget,
+        &igQtPointAndCellIdsWidget::idsGenerated,
+        this,
+        [this]() {
+            auto scene = rendererWidget->GetScene();
+            auto model = scene ? scene->GetCurrentModel() : nullptr;
+            if (!model) return;
+
+            auto data = model->GetDataObject();
+            if (!data) return;
+
+            modelTreeWidget->updateAllAttriubute(data);
+            modelTreeWidget->updateCurrentModelInfo();
+            rendererWidget->update();
+        });
+
     auto makeWidgetScrollable = [&](QWidget* content, QWidget* parent) -> QWidget* {
         if (!content) return nullptr;
         if (qobject_cast<QScrollArea*>(content)) return content;
@@ -909,6 +995,8 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     m_leftFieldDock->setWindowTitle(QStringLiteral("工具面板"));
     m_leftFieldDock->setAllowedAreas(Qt::LeftDockWidgetArea);
     m_leftFieldDock->setFeatures(QDockWidget::DockWidgetClosable);
+    // 每个面板的 tab 索引初始化为 -1（未打开）；必须动态 fill，避免枚举增加后错位
+    m_leftToolTabByPanel.fill(-1);
     m_leftFieldTabs = new QTabWidget(m_leftFieldDock);
     m_leftFieldTabs->setObjectName("LeftFieldTabs");
     m_leftFieldTabs->setTabPosition(QTabWidget::North);
@@ -950,6 +1038,8 @@ void igQtMainWindow::initAllUnDefinedComponents() {
     makeDockWidgetScrollable(ui->dockWidget_ModelList);
     makeDockWidgetScrollable(ui->dockWidget_ContourExtract);
     makeDockWidgetScrollable(ui->dockWidget_GenerateProcessIds);
+    makeDockWidgetScrollable(ui->dockWidget_ExtractEdges);
+    makeDockWidgetScrollable(ui->dockWidget_CountCellVertices);
     makeDockWidgetScrollable(modelTreeWidget->getPropertiesDock());
 
     // 设置左侧 dock 区域的初始宽度（不锁死，用户仍可拖拽调整）
@@ -1352,6 +1442,296 @@ void igQtMainWindow::showDarkFramelessMessage(const QString& title, const QStrin
 }
 
 void igQtMainWindow::initAllFilters() {
+    /* DIME #19：高程标量场（任意方向投影） */
+    connect(ui->action_Elevation, &QAction::triggered, this, [this]() {
+        auto model = rendererWidget->GetScene()->GetCurrentModel();
+        if (!model) {
+            showDarkFramelessMessage(QStringLiteral("高程场"), QStringLiteral("请先选择一个模型。"));
+            return;
+        }
+        auto data = model->GetDataObject();
+
+        // 表单对话框：方向向量三分量 + 输出范围两分量
+        QDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("高程场 (Elevation)"));
+        // 深色主题：主窗口样式会渗入子对话框，需显式接管配色
+        dlg.setAttribute(Qt::WA_StyledBackground, true);
+        dlg.setStyleSheet(QStringLiteral(
+            "QDialog { background-color: #1E1E1E; }"
+            "QLabel { color: #D8D8D8; font-size: 10pt; }"
+            "QDoubleSpinBox { background-color: #252526; color: #D4D4D4;"
+            " border: 1px solid #3C3C3C; border-radius: 4px;"
+            " padding: 4px 24px 4px 8px; selection-background-color: #094771; }"
+            "QPushButton { background-color: #2A2A2A; color: #EAEAEA;"
+            " border: 1px solid #3A3A3A; padding: 6px 16px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #3A3A3A; }"
+            "QPushButton:pressed { background-color: #252526; }"));
+
+        QFormLayout* form = new QFormLayout(&dlg);
+        QDoubleSpinBox* dx = new QDoubleSpinBox(&dlg);
+        QDoubleSpinBox* dy = new QDoubleSpinBox(&dlg);
+        QDoubleSpinBox* dz = new QDoubleSpinBox(&dlg);
+        for (QDoubleSpinBox* sb : {dx, dy, dz}) {
+            sb->setRange(-1000.0, 1000.0);
+            sb->setDecimals(6);
+            sb->setSingleStep(0.1);
+        }
+        dx->setValue(0.0);
+        dy->setValue(0.0);
+        dz->setValue(1.0);
+
+        QDoubleSpinBox* lowSb = new QDoubleSpinBox(&dlg);
+        QDoubleSpinBox* highSb = new QDoubleSpinBox(&dlg);
+        for (QDoubleSpinBox* sb : {lowSb, highSb}) {
+            sb->setRange(-1e9, 1e9);
+            sb->setDecimals(6);
+            sb->setSingleStep(0.1);
+        }
+        lowSb->setValue(0.0);
+        highSb->setValue(1.0);
+
+        form->addRow(QStringLiteral("方向向量 X (dx)："), dx);
+        form->addRow(QStringLiteral("方向向量 Y (dy)："), dy);
+        form->addRow(QStringLiteral("方向向量 Z (dz)："), dz);
+        form->addRow(QStringLiteral("输出范围下限 (low)："), lowSb);
+        form->addRow(QStringLiteral("输出范围上限 (high)："), highSb);
+        form->addRow(QString(), new QLabel(
+            QStringLiteral("提示：方向向量无需归一化，但不能全为 0；负方向 = 高低翻转。"),
+            &dlg));
+
+        QDialogButtonBox* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        form->addRow(QString(), buttons);
+
+        if (dlg.exec() != QDialog::Accepted) return;
+
+        const double dvx = dx->value(), dvy = dy->value(), dvz = dz->value();
+        const double low = lowSb->value(), high = highSb->value();
+        if (dvx == 0.0 && dvy == 0.0 && dvz == 0.0) {
+            showDarkFramelessMessage(QStringLiteral("高程场"),
+                QStringLiteral("方向向量不能全为 0（零向量没有投影方向）。"));
+            return;
+        }
+        if (low >= high) {
+            showDarkFramelessMessage(QStringLiteral("高程场"),
+                QStringLiteral("范围非法：low 必须小于 high。"));
+            return;
+        }
+
+        ElevationFilter::Pointer filter = ElevationFilter::New();
+        filter->SetDirection(static_cast<float>(dvx), static_cast<float>(dvy), static_cast<float>(dvz));
+        filter->SetOutputRange(low, high);
+        filter->SetInput(data);
+        if (filter->Execute()) {
+            modelTreeWidget->updateAllAttriubute(data);
+            auto item = modelTreeWidget->getItemFromObject(data);
+            if (item && item->childCount() > 0) {
+                item->setExpanded(true);
+                auto child = item->child(item->childCount() - 1);
+                if (child) {
+                    item->setSelected(false);
+                    child->setSelected(true);
+                    modelTreeWidget->setCurrentItem(child);
+                }
+            }
+            rendererWidget->update();
+        }
+    });
+
+    connect(ui->menu_filters->addAction(QStringLiteral("阈值 (Threshold)")), &QAction::triggered, this, [this](bool) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (!obj) return;
+
+        auto attrs = obj->GetAttributeSet();
+        std::vector<IGsize> attrIndices;
+        std::vector<QString> attrNames;
+        if (attrs) {
+            for (IGsize i = 0; i < static_cast<IGsize>(attrs->GetNumberOfAttributes()); ++i) {
+                auto& attr = attrs->GetAttribute(i);
+                if (attr.isDeleted || !attr.pointer) continue;
+                attrIndices.push_back(i);
+                const QString attach = attr.attachmentType == IG_CELL ? QStringLiteral("Cell") : QStringLiteral("Point");
+                attrNames.push_back(QStringLiteral("%1 (%2)").arg(QString::fromStdString(attr.pointer->GetName()), attach));
+            }
+        }
+        if (attrNames.empty()) {
+            showDarkFramelessMessage(QStringLiteral("Warning"),
+                                     QStringLiteral("当前模型没有可用于阈值提取的属性数据。"));
+            return;
+        }
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("阈值"));
+        int scalarId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("标量"), attrNames);
+        int dimId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("分量"), "0");
+        int lowerId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("下限"), "0");
+        int upperId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("上限"), "1");
+        int boundaryId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("边界"),
+                                              std::vector<QString>{QStringLiteral("Closed"), QStringLiteral("Open"),
+                                                                   QStringLiteral("LowerInclusive"),
+                                                                   QStringLiteral("UpperInclusive")});
+        int evalId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("点数据判定"),
+                                          std::vector<QString>{QStringLiteral("AllScalars"), QStringLiteral("AnyScalar")});
+
+        auto updateRangeEdits = [=]() {
+            bool ok = false;
+            const int choice = dialog->getComboIndex(scalarId, ok);
+            if (!ok || choice < 0 || choice >= static_cast<int>(attrIndices.size())) return;
+            auto* liveAttrs = obj->GetAttributeSet();
+            if (!liveAttrs) return;
+            auto& attr = liveAttrs->GetAttribute(attrIndices[static_cast<size_t>(choice)]);
+            if (!attr.pointer) return;
+
+            int dimension = 0;
+            if (auto* dimEdit = qobject_cast<QLineEdit*>(dialog->getWidget(dimId))) {
+                dimension = dimEdit->text().toInt(&ok);
+                if (!ok) dimension = 0;
+            }
+            dimension = dimension < 0 ? 0 : dimension;
+            const int maxDim = attr.pointer->GetDimension() > 0 ? attr.pointer->GetDimension() - 1 : 0;
+            if (dimension > maxDim) dimension = maxDim;
+
+            auto range = attr.GetDataRange();
+            if (!range) return;
+            int rangeIndex = attr.pointer->GetDimension() <= 1 ? 0 : (1 + dimension);
+            if (rangeIndex >= static_cast<int>(range->GetNumberOfElements())) rangeIndex = 0;
+
+            if (auto* lowerEdit = qobject_cast<QLineEdit*>(dialog->getWidget(lowerId))) {
+                lowerEdit->setText(QString::number(range->GetElementValue(rangeIndex, 0), 'g', 8));
+            }
+            if (auto* upperEdit = qobject_cast<QLineEdit*>(dialog->getWidget(upperId))) {
+                upperEdit->setText(QString::number(range->GetElementValue(rangeIndex, 1), 'g', 8));
+            }
+        };
+        updateRangeEdits();
+        if (auto* combo = qobject_cast<QComboBox*>(dialog->getWidget(scalarId))) {
+            connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), dialog,
+                    [=](int) { updateRangeEdits(); });
+        }
+        if (auto* dimEdit = qobject_cast<QLineEdit*>(dialog->getWidget(dimId))) {
+            connect(dimEdit, &QLineEdit::editingFinished, dialog, [=]() { updateRangeEdits(); });
+        }
+
+        dialog->show();
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = false;
+            const int choice = dialog->getComboIndex(scalarId, ok);
+            if (!ok || choice < 0 || choice >= static_cast<int>(attrIndices.size())) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("请选择有效的标量。"));
+                return;
+            }
+
+            auto* liveAttrs = obj->GetAttributeSet();
+            if (!liveAttrs) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("当前模型属性已失效。"));
+                return;
+            }
+            auto& attr = liveAttrs->GetAttribute(attrIndices[static_cast<size_t>(choice)]);
+            if (!attr.pointer) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("所选标量无效。"));
+                return;
+            }
+
+            const int dimension = dialog->getInt(dimId, ok);
+            const double lower = dialog->getDouble(lowerId, ok);
+            const double upper = dialog->getDouble(upperId, ok);
+            const int boundary = dialog->getComboIndex(boundaryId, ok);
+            const int evaluation = dialog->getComboIndex(evalId, ok);
+
+            auto filter = ThresholdFilter::New();
+            filter->SetInput(obj);
+            filter->SetScalarData(attr.pointer,
+                                  attr.attachmentType == IG_CELL ? ThresholdFilter::Association::Cell
+                                                                 : ThresholdFilter::Association::Point,
+                                  dimension < 0 ? 0 : dimension);
+            filter->SetThreshold(lower, upper);
+            switch (boundary) {
+                case 1: filter->SetBoundaryMode(ThresholdFilter::BoundaryMode::Open); break;
+                case 2: filter->SetBoundaryMode(ThresholdFilter::BoundaryMode::LowerInclusive); break;
+                case 3: filter->SetBoundaryMode(ThresholdFilter::BoundaryMode::UpperInclusive); break;
+                default: filter->SetBoundaryMode(ThresholdFilter::BoundaryMode::Closed); break;
+            }
+            filter->SetPointEvaluation(evaluation == 1 ? ThresholdFilter::PointEvaluation::AnyScalar
+                                                       : ThresholdFilter::PointEvaluation::AllScalars);
+
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"),
+                                         QStringLiteral("阈值提取失败，请检查标量、分量与阈值范围。"));
+                return;
+            }
+
+            auto output = filter->GetOutput();
+            if (!output) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("阈值提取未产生有效结果。"));
+                return;
+            }
+            output->SetName(obj->GetName() + "_threshold");
+            modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
+            rendererWidget->update();
+            dialog->close();
+        });
+    });
+
+    connect(ui->menu_filters->addAction(QStringLiteral("生成ID (GenerateIds)")), &QAction::triggered, this, [this](bool) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (!obj) return;
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("生成ID"));
+        int typeId = dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("附着类型"),
+                                          std::vector<QString>{QStringLiteral("Point"), QStringLiteral("Cell")});
+        int nameId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("数组名"), "Ids");
+        int startId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("起始ID"), "0");
+        dialog->show();
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = false;
+            const int typeIndex = dialog->getComboIndex(typeId, ok);
+            const IGenum dataType = typeIndex == 1 ? IG_CELL : IG_POINT;
+            QString arrayName = "Ids";
+            if (auto* nameEdit = qobject_cast<QLineEdit*>(dialog->getWidget(nameId))) {
+                arrayName = nameEdit->text().trimmed();
+            }
+            if (arrayName.isEmpty()) arrayName = QStringLiteral("Ids");
+            const int start = dialog->getInt(startId, ok);
+
+            auto filter = iGameGenerateIdsFilter::New(dataType);
+            filter->SetInput(obj);
+            filter->SetArrayName(arrayName.toStdString());
+            filter->SetStartId(start);
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"),
+                                         QStringLiteral("生成ID失败，请确认模型包含对应的点或单元。"));
+                return;
+            }
+
+            modelTreeWidget->updateAllAttriubute(obj);
+            const int index = obj->GetAttributeSet()
+                                      ? obj->GetAttributeSet()->GetAttributeIndex(arrayName.toStdString())
+                                      : -1;
+            auto drawObject = DynamicCast<DrawObject>(obj);
+            if (drawObject) {
+                auto item = modelTreeWidget->getItemFromObject(obj);
+                if (item && item->childCount() > 0 && index >= 0) {
+                    item->setExpanded(true);
+                    auto child = item->child(index);
+                    if (child) {
+                        item->setCurrentChild(child);
+                        item->setSelected(false);
+                        item->viewAttribute(index, -1);
+                        child->setSelected(true);
+                        modelTreeWidget->setCurrentItem(child);
+                    }
+                }
+            }
+            rendererWidget->update();
+            dialog->close();
+        });
+    });
+
     /* Feature Edges is intentionally a first-level item under 算法处理. */
     connect(ui->menu_filters->addAction(QStringLiteral("特征边提取 (Feature Edges)")), &QAction::triggered, this,
             [this](bool) {
@@ -1457,6 +1837,32 @@ void igQtMainWindow::initAllFilters() {
                     dialog->close();
                 });
             });
+    connect(ui->action_TriangleStrip, &QAction::triggered, this, [this] {
+        auto model = rendererWidget->GetScene()->GetCurrentModel();
+        if (!model || !model->GetDataObject()) {
+            showDarkFramelessMessage(QStringLiteral("三角带转换"), QStringLiteral("请先选择一个模型。"));
+            return;
+        }
+        auto input = model->GetDataObject();
+        if (!TriangleStripWidget->isOutput(input)) { TriangleStripWidget->setInput(input); }
+        TriangleStripDockWidget->show();
+        TriangleStripDockWidget->raise();
+        resizeDocks({TriangleStripDockWidget}, {460}, Qt::Horizontal);
+    });
+    connect(modelTreeWidget, &igQtModelDialogWidget::CurrendModelChanged, this, [this] {
+        if (!TriangleStripDockWidget->isVisible()) { return; }
+        QTimer::singleShot(0, this, [this] {
+            auto model = rendererWidget->GetScene()->GetCurrentModel();
+            auto input = model ? model->GetDataObject() : nullptr;
+            // Publishing a result selects it. Do not turn it into the source
+            // for the next Apply or clear the statistics just computed.
+            if (!TriangleStripWidget->isOutput(input)) { TriangleStripWidget->setInput(input); }
+        });
+    });
+    connect(modelTreeWidget, &igQtModelDialogWidget::ModelDeleted, this, [this](const std::string& name) {
+        auto* input = TriangleStripWidget->input();
+        if (input && input->GetName() == name) { TriangleStripWidget->setInput(nullptr); }
+    });
     connect(ui->action_GlobalIds, &QAction::triggered, this, [this]() {
         auto model = rendererWidget->GetScene()->GetCurrentModel();
         if (!model) {
@@ -1468,11 +1874,155 @@ void igQtMainWindow::initAllFilters() {
         GlobalIdDockWidget->raise();
         GlobalIdWidget->setFocus(Qt::OtherFocusReason);
     });
+
+    // ExtractSubset Filter - Extract a subset from structured mesh
+    connect(ui->menu_filters->addAction(QStringLiteral("提取子集 (Extract Subset)")), &QAction::triggered, this, [&](bool checked) {
+        if (rendererWidget->GetScene() == nullptr
+            || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("提取子集"), QStringLiteral("请先加载并选择模型。"));
+            return;
+        }
+
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (obj == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("提取子集"), QStringLiteral("当前模型没有可用数据。"));
+            return;
+        }
+
+        // Check if input is StructuredMesh
+        auto mesh = DynamicCast<StructuredMesh>(obj);
+        if (mesh == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("提取子集"), QStringLiteral("该算法只支持结构化网格 (StructuredMesh)。"));
+            return;
+        }
+
+        igIndex* dimSize = mesh->GetDimensionSize();
+        QString description = QString("该算法从结构化网格中提取一个子区域。<br><br>"
+                                     "当前网格维度: %1 x %2 x %3<br>"
+                                     "请设置要提取的区域范围（I, J, K 方向的最小/最大索引）。<br>"
+                                     "如果最大索引设为 -1，则默认为该方向的最大值。").arg(dimSize[0]).arg(dimSize[1]).arg(dimSize[2]);
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("提取子集 (Extract Subset)"));
+        dialog->setFilterDescription(description);
+
+        // Add parameters for VOI (Volume of Interest)
+        int minI_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最小 I 索引 (minI)"), "0");
+        int maxI_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最大 I 索引 (maxI)"), "-1");
+        int minJ_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最小 J 索引 (minJ)"), "0");
+        int maxJ_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最大 J 索引 (maxJ)"), "-1");
+        int minK_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最小 K 索引 (minK)"), "0");
+        int maxK_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最大 K 索引 (maxK)"), "-1");
+
+        dialog->show();
+
+        dialog->setApplyFunctor([=, this]() {
+            // 6 个参数各自独立的解析标志，任一解析失败都能被独立检测到。
+            // 原写法共享一个 ok：若 minI 解析失败但 maxI 成功，ok 会被覆盖为 true，
+            // 导致 minI 的解析错误被静默吞掉。
+
+            // Get parameter values
+            bool okMinI = false, okMaxI = false;
+            bool okMinJ = false, okMaxJ = false;
+            bool okMinK = false, okMaxK = false;
+            int minI = dialog->getInt(minI_id, okMinI);
+            int maxI = dialog->getInt(maxI_id, okMaxI);
+            int minJ = dialog->getInt(minJ_id, okMinJ);
+            int maxJ = dialog->getInt(maxJ_id, okMaxJ);
+            int minK = dialog->getInt(minK_id, okMinK);
+            int maxK = dialog->getInt(maxK_id, okMaxK);
+
+            if (!okMinI || !okMaxI || !okMinJ || !okMaxJ || !okMinK || !okMaxK) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"), QStringLiteral("请输入有效的整数参数。"));
+                return;
+            }
+
+            // Validate parameters
+            if (minI < 0 || minJ < 0 || minK < 0) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"), QStringLiteral("最小索引不能为负数。"));
+                return;
+            }
+
+            if (minI > maxI && maxI != -1 || minJ > maxJ && maxJ != -1 || minK > maxK && maxK != -1) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"), QStringLiteral("最小索引不能大于最大索引。"));
+                return;
+            }
+
+            // Create and execute filter
+            ExtractSubsetFilter::Pointer filter = ExtractSubsetFilter::New();
+            filter->SetVOI(minI, maxI, minJ, maxJ, minK, maxK);
+            filter->SetInput(obj);
+
+            bool filterOk = filter->Execute();
+
+            if (!filterOk) {
+                showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("子集提取失败，请检查参数是否超出网格范围。"));
+                dialog->close();
+                return;
+            }
+
+            auto output = filter->GetOutput(0);
+            if (output == nullptr) {
+                showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("算法未产生有效结果。"));
+                dialog->close();
+                return;
+            }
+
+            // Set output name and add to scene
+            output->SetName("Subset_" + obj->GetName());
+            modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
+            rendererWidget->update();
+
+            dialog->close();
+        });
+    });
+
     connect(modelTreeWidget, &igQtModelDialogWidget::CurrendModelChanged, this, [this]() {
         if (!GlobalIdDockWidget || !GlobalIdDockWidget->isVisible()) return;
         QTimer::singleShot(
                 0, this, [this]() { GlobalIdWidget->setCurrentModel(rendererWidget->GetScene()->GetCurrentModel()); });
     });
+
+    // 添加 Point And Cell IDs 一级菜单项
+    QAction* pointAndCellIdsAction =ui->menu_filters->addAction(
+        QStringLiteral("生成点与单元ID (Point And Cell IDs)"));
+
+    connect(pointAndCellIdsAction,
+        &QAction::triggered,
+        this,
+        [this](bool) {
+            auto scene = rendererWidget->GetScene();
+            auto model = scene ? scene->GetCurrentModel() : nullptr;
+
+            if (!model) {
+                showDarkFramelessMessage(
+                        QStringLiteral("点与单元ID"),
+                        QStringLiteral("请先选择一个模型。"));
+                return;
+            }
+
+            PointAndCellIdsWidget->setCurrentModel(model);
+            PointAndCellIdsDockWidget->show();
+            PointAndCellIdsDockWidget->raise();
+            PointAndCellIdsWidget->setFocus(Qt::OtherFocusReason);
+        });
+
+        // 面板开启时同步当前选中模型
+    connect(modelTreeWidget,
+        &igQtModelDialogWidget::CurrendModelChanged,
+        this,
+        [this]() {
+            if (!PointAndCellIdsDockWidget ||
+                !PointAndCellIdsDockWidget->isVisible()) {
+                return;
+            }
+
+            QTimer::singleShot(0, this, [this]() {
+                auto scene = rendererWidget->GetScene();
+                PointAndCellIdsWidget->setCurrentModel(
+                        scene ? scene->GetCurrentModel() : nullptr);
+            });
+        });
 
     /* Data Processing 前两档：加宽以容纳较长参数标签，并关闭参数区滚动条（内容较少无需滚动） */
     auto tuneMeshSimplifyFilterDialog = [](igQtFilterDialogDockWidget* d) {
@@ -1483,6 +2033,200 @@ void igQtMainWindow::initAllFilters() {
             sa->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         }
     };
+
+      connect(ui->menu_filters->addAction(QStringLiteral("单元几何校验 (Validate Cells)")), &QAction::triggered, this,
+            [&](bool checked) {
+                auto* scene = rendererWidget->GetScene();
+                if (scene == nullptr || scene->GetCurrentModel() == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用模型"),
+                                             QStringLiteral("请先加载并选择一个网格模型。"));
+                    return;
+                }
+                auto model = scene->GetCurrentModel();
+                auto obj = model->GetDataObject();
+                if (obj == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用数据"),
+                                             QStringLiteral("当前模型没有可用的网格数据。"));
+                    return;
+                }
+                ValidateCellsFilter::Pointer filter = ValidateCellsFilter::New();
+                filter->SetInput(obj);
+                filter->SetModel(model);
+                if (!filter->Execute()) {
+                    showDarkFramelessMessage(QStringLiteral("校验失败"),
+                                             QStringLiteral("该数据类型不支持单元几何校验。"));
+                    return;
+                }
+                const auto& invalidIds = filter->GetInvalidCellIds();
+                if (invalidIds.empty()) {
+                    showDarkFramelessMessage(QStringLiteral("校验通过"),
+                                             QStringLiteral("未发现无效单元，当前网格几何体有效。"), true);
+                    return;
+                }
+                modelTreeWidget->addDataObjectToModelTree(obj, Algorithm);
+                rendererWidget->update();
+                showDarkFramelessMessage(QStringLiteral("单元几何校验"),
+                                         QString(QStringLiteral("发现 %1 个无效单元，已高亮显示。"))
+                                                 .arg(static_cast<int>(invalidIds.size())),
+                                         false);
+            });
+
+      connect(ui->menu_filters->addAction(QStringLiteral("面/点法向量计算 (Surface Normals)")), &QAction::triggered, this,
+            [&](bool checked) {
+                auto* scene = rendererWidget->GetScene();
+                if (scene == nullptr || scene->GetCurrentModel() == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用模型"),
+                                             QStringLiteral("请先加载并选择一个网格模型。"));
+                    return;
+                }
+                auto model = scene->GetCurrentModel();
+                auto obj = model->GetDataObject();
+                if (obj == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用数据"),
+                                             QStringLiteral("当前模型没有可用的网格数据。"));
+                    return;
+                }
+                SurfaceNormalsFilter::Pointer filter = SurfaceNormalsFilter::New();
+                filter->SetInput(obj);
+                if (!filter->Execute()) {
+                    showDarkFramelessMessage(QStringLiteral("数据类型不匹配"),
+                                             QStringLiteral("面/点法向量计算仅支持多边形表面网格（Poly Data），请检查输入数据类型。"));
+                    return;
+                }
+                auto outMesh = DynamicCast<SurfaceMesh>(filter->GetOutput());
+                modelTreeWidget->addDataObjectToModelTree(outMesh, Algorithm);
+                rendererWidget->update();
+                showDarkFramelessMessage(QStringLiteral("面/点法向量计算完成"),
+                                         QStringLiteral("已为表面网格计算面法向量和点法向量，可在查找信息中查看 Normals 与 Normals_Magnitude。"),
+                                         true);
+            });
+
+            
+
+            
+
+    // 直接置于“算法处理”一级菜单；具体界面和交互由独立面板负责。
+    QAction* extractLocationAction = ui->menu_filters->addAction(
+            QStringLiteral("提取指定位置数据 (Extract Location)"));
+    connect(extractLocationAction, &QAction::triggered, this, [this]() {
+        auto model = rendererWidget->GetScene()->GetCurrentModel();
+        if (!model) {
+            showDarkFramelessMessage(QStringLiteral("提取指定位置数据"),
+                                     QStringLiteral("请先在模型树中选择一个网格模型。"));
+            return;
+        }
+        auto* panel = new igQtExtractLocationWidget(rendererWidget, modelTreeWidget, model, this);
+        if (!panel->isReady()) {
+            showDarkFramelessMessage(QStringLiteral("提取指定位置数据"),
+                                     QStringLiteral("当前仅支持非结构网格（UnstructuredMesh）；操作已取消。"));
+            panel->deleteLater();
+            return;
+        }
+        panel->show();
+        panel->raise();
+        panel->activateWindow();
+
+    });
+    QMenu* mesh_processing = ui->menu_filters->addMenu(QStringLiteral("数据处理 (Data Processing)"));
+
+    connect(ui->menu_filters->addAction(QStringLiteral("移除Ghost信息 (Remove Ghost Information)")),
+            &QAction::triggered, this, [&](bool checked) {
+                if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+
+                igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+                dialog->setFilterTitle(QStringLiteral("移除Ghost信息"));
+                dialog->show();
+
+                dialog->setApplyFunctor([=, this]() {
+                    auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+
+                    RemoveGhostInformationFilter::Pointer filter = RemoveGhostInformationFilter::New();
+
+                    filter->SetInput(obj);
+
+                    if (!filter->Execute()) {
+                        showDarkFramelessMessage(QStringLiteral("执行出错"),
+                                                 QStringLiteral("当前数据不支持移除Ghost信息"));
+                        dialog->close();
+                        return;
+                    }
+
+                    if (!filter->WasModified()) {
+                        showDarkFramelessMessage(QStringLiteral("提示"), QStringLiteral("未发现 Ghost 信息"));
+                        dialog->close();
+                        return;
+                    }
+
+                    auto outObj = filter->GetOutput();
+
+                    if (outObj == nullptr) {
+                        showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("未生成有效输出结果"));
+                        dialog->close();
+                        return;
+                    }
+
+                    outObj->SetName(obj->GetName() + "_RemoveGhost");
+
+                    modelTreeWidget->addDataObjectToModelTree(outObj, Algorithm);
+                    rendererWidget->update();
+
+                    dialog->close();
+                });
+            });
+
+    QAction* shrinkAction = ui->menu_filters->addAction(QStringLiteral("单元收缩 (Shrink)"));
+    connect(shrinkAction, &QAction::triggered, this, [this](bool checked) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        auto model = rendererWidget->GetScene()->GetCurrentModel();
+        auto data = model->GetDataObject();
+
+        std::string filePath;
+        auto props = data->GetProperties();
+        if (props) {
+            auto prop = props->GetProperty("FilePath");
+            if (prop && !prop.IsNull()) { filePath = prop->Get<std::string>(); }
+        }
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("单元收缩 (Shrink)"));
+        int shrinkId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("收缩比例 (0~1)"),
+                                            "0.5");
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = false;
+            double factor = dialog->getDouble(shrinkId, ok);
+            if (!ok || factor < 0.0 || factor > 1.0) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("请输入 0 ~ 1 之间的数字"));
+                return;
+            }
+            if (filePath.empty()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"),
+                                         QStringLiteral("找不到模型文件路径，请通过“打开文件”加载模型"));
+                return;
+            }
+            auto base = iGame::FileIO::ReadFile(filePath);
+            if (base.IsNull()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("读取原始模型失败"));
+                return;
+            }
+            base->GetProperties()->AddProperty(iGame::Variant::String, "FilePath")->SetValue(filePath);
+            auto filter = iGame::ShrinkFilter::New();
+            filter->SetShrinkFactor(factor);
+            filter->SetInput(0, base);
+            if (filter->Execute()) {
+                model->SetDataObject(base);
+                auto drawObject = iGame::DynamicCast<iGame::DrawObject>(base);
+                if (drawObject) { drawObject->ForceReConvertToDrawableData(); }
+                model->Update();
+                modelTreeWidget->updateAllAttriubute(base);
+                rendererWidget->update();
+                dialog->close();
+            } else {
+                showDarkFramelessMessage(QStringLiteral("Warning"),
+                                         QStringLiteral("Shrink 执行失败：不支持的网格类型"));
+            }
+        });
+        dialog->show();
+    });
 
     QAction* overlappingCellsDetectorAction = ui->menu_filters->addAction(
             QStringLiteral("检测重叠单元 (Overlapping Cells Detector)"));
@@ -1580,7 +2324,7 @@ void igQtMainWindow::initAllFilters() {
         });
     });
 
-    QMenu* mesh_processing = ui->menu_filters->addMenu(QStringLiteral("数据处理 (Data Processing)"));
+    
     QAction* ghostCellAction = ui->menu_filters->addAction(QStringLiteral("Ghost 单元标记 (Ghost Cells)"));
     connect(ghostCellAction, &QAction::triggered, this, [this](bool checked) {
         if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
@@ -2356,6 +3100,55 @@ void igQtMainWindow::initAllFilters() {
         rendererWidget->update();
     });
 
+    QMenu* attr_manipulation = ui->menu_filters->addMenu(QStringLiteral("数据属性操作 (Attribute Manipulation)"));
+    connect(attr_manipulation->addAction(QStringLiteral("随机向量 (Random Vectors)")), &QAction::triggered, this, [this](bool) {
+        if (rendererWidget->GetScene() == nullptr
+            || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("请先加载并选择模型。"));
+            return;
+        }
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (obj == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
+            return;
+        }
+        if (iGame::DynamicCast<iGame::PointSet>(obj) == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("当前模型不支持随机向量（需要网格/点集）。"));
+            return;
+        }
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("随机向量"));
+        int minId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最小速度"), "0");
+        int maxId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("最大速度"), "1");
+        dialog->show();
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = false;
+            double minSpeed = dialog->getDouble(minId, ok);
+            if (!ok || minSpeed < 0) {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("请输入有效的最小速度（>=0）。"));
+                return;
+            }
+            double maxSpeed = dialog->getDouble(maxId, ok);
+            if (!ok || maxSpeed < minSpeed) {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("请输入有效的最大速度（>= 最小速度）。"));
+                return;
+            }
+
+            auto filter = RandomVectorsFilter::New();
+            filter->SetMinimumSpeed(minSpeed);
+            filter->SetMaximumSpeed(maxSpeed);
+            filter->SetInput(obj);
+            if (filter->Execute()) {
+                modelTreeWidget->addDataObjectToModelTree(filter->GetOutput(), ItemSource::Algorithm);
+                rendererWidget->update();
+                dialog->close();
+            } else {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("随机向量生成失败。"));
+            }
+        });
+    });
+
     //connect(mesh_processing->addAction("Test"), &QAction::triggered, this, [&](bool checked) {
     //    auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
 
@@ -2405,6 +3198,8 @@ void igQtMainWindow::initAllFilters() {
     //        std::cout << end - start << std::endl;
 
     //    });
+
+    
     // 按单元类型提取：直接作为【算法处理】一级菜单项（不嵌套子菜单）
     connect(ui->menu_filters->addAction(QStringLiteral("按单元类型提取 (Extract Cells By Type)")), &QAction::triggered,
             this, [this](bool) {
@@ -2466,7 +3261,115 @@ void igQtMainWindow::initAllFilters() {
         // 用户随后改勾选再点"提取"即在该新模型上更新
         m_extractCellsByTypeWidget->onApply();
     });
-    
+
+
+    QAction* axisAlignedReflectionAction =ui->menu_filters->addAction(
+                QStringLiteral("反射 (Axis Aligned Reflection)"));
+    connect(axisAlignedReflectionAction,&QAction::triggered,this,
+        [this](bool) {
+            auto scene = rendererWidget->GetScene();
+            if (!scene || !scene->GetCurrentModel()) {
+                showDarkFramelessMessage(
+                        QStringLiteral("反射"),
+                        QStringLiteral("请先选择一个模型。"));
+                return;
+            }
+            auto input = scene->GetCurrentModel()->GetDataObject();
+            if (!DynamicCast<UnstructuredMesh>(input)) {
+                showDarkFramelessMessage(
+                        QStringLiteral("反射"),
+                        QStringLiteral(
+                                "当前版本仅支持非结构网格 "
+                                "(UnstructuredMesh)。"));
+                return;
+            }
+
+            m_axisAlignedReflectionFilter =
+                    AxisAlignedReflectionFilter::New();
+
+            m_axisAlignedReflectionFilter->SetInput(input);
+
+            m_axisAlignedReflectionModel = nullptr;
+            ++m_axisAlignedReflectionCount;
+
+            AxisAlignedReflectionWidget->resetParameters();
+
+            AxisAlignedReflectionDockWidget->show();
+            AxisAlignedReflectionDockWidget->raise();
+            AxisAlignedReflectionWidget->setFocus(
+                    Qt::OtherFocusReason);
+        });
+    connect(AxisAlignedReflectionWidget,&igQtAxisAlignedReflectionWidget::applyRequested,this,
+        [this]() {
+            if (!m_axisAlignedReflectionFilter) {
+                return;
+            }
+
+            m_axisAlignedReflectionFilter->SetPlane(
+                    AxisAlignedReflectionWidget->plane());
+
+            m_axisAlignedReflectionFilter->SetCenter(
+                    AxisAlignedReflectionWidget->center());
+
+            m_axisAlignedReflectionFilter->SetCopyInput(
+                    AxisAlignedReflectionWidget->copyInput());
+
+            m_axisAlignedReflectionFilter->SetFlipAllInputArrays(
+                    AxisAlignedReflectionWidget
+                            ->flipAllInputArrays());
+
+            if (!m_axisAlignedReflectionFilter->Execute()) {
+                showDarkFramelessMessage(
+                        QStringLiteral("反射"),
+                        QStringLiteral(
+                                "反射执行失败，请检查输入网格和参数。"));
+                return;
+            }
+
+            auto output =
+                    DynamicCast<UnstructuredMesh>(
+                            m_axisAlignedReflectionFilter
+                                    ->GetOutput());
+
+            if (!output) {
+                showDarkFramelessMessage(
+                        QStringLiteral("反射"),
+                        QStringLiteral(
+                                "反射未生成有效的非结构网格。"));
+                return;
+            }
+
+            const QString outputName =
+                    QStringLiteral("Reflect_%1")
+                            .arg(m_axisAlignedReflectionCount);
+
+            output->SetName(outputName.toStdString());
+
+            if (!m_axisAlignedReflectionModel) {
+                const int id =
+                        modelTreeWidget
+                                ->addDataObjectToModelTree(
+                                        output,
+                                        Algorithm);
+
+                m_axisAlignedReflectionModel =
+                        rendererWidget->GetScene()
+                                ->GetModelById(id);
+            } else {
+                m_axisAlignedReflectionModel
+                        ->SetDataObject(output);
+
+                modelTreeWidget->updateItemName(output);
+
+                modelTreeWidget->updateAllAttriubute(
+                        output);
+
+                modelTreeWidget
+                        ->updateCurrentModelInfo();
+            }
+
+            rendererWidget->update();
+        });
 
     QAction* countCellFaces = view->addAction(
             QStringLiteral("统计单元面数 (Count Cell Faces)"));
@@ -2482,8 +3385,7 @@ void igQtMainWindow::initAllFilters() {
         auto input = scene->GetCurrentModel()->GetDataObject();
         if (input.IsNull()) {
             igDebug("[CountCellFaces UI] Current model has no data object; Execute was not called.");
-            showDarkFramelessMessage(QStringLiteral("无可用模型"),
-                                     QStringLiteral("当前模型没有可用数据。"));
+            showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
             return;
         }
 
@@ -2491,8 +3393,7 @@ void igQtMainWindow::initAllFilters() {
         CountCellFacesFilter::Pointer filter = CountCellFacesFilter::New();
         filter->SetInput(input);
         if (!filter->Execute()) {
-            showDarkFramelessMessage(QStringLiteral("执行失败"),
-                                     QString::fromStdString(filter->GetMessage()));
+            showDarkFramelessMessage(QStringLiteral("执行失败"), QString::fromStdString(filter->GetMessage()));
             return;
         }
 
@@ -2506,6 +3407,361 @@ void igQtMainWindow::initAllFilters() {
         ui->widget_SearchInfo->setCurrentModel(scene->GetCurrentModel());
         rendererWidget->update();
     });
+
+    // 转换为顶点单元：直接作为「算法处理」一级菜单项，点击即调用 ConvertToVertexFilter。
+    connect(ui->menu_filters->addAction(QStringLiteral("转换为顶点单元 (Convert To Vertex)")), &QAction::triggered, this, [&](bool checked) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (!obj) return;
+        ConvertToVertexFilter::Pointer filter = ConvertToVertexFilter::New();
+        filter->SetInput(obj);
+        if (filter->Execute()) {
+            modelTreeWidget->addDataObjectToModelTree(filter->GetOutput(), Algorithm);
+            rendererWidget->update();
+        }
+    });
+
+        
+
+    // 新增mesh_quality综合网格质量评估
+    QAction* meshQualityAction =ui->menu_filters->addAction(QStringLiteral("网格质量评估 (MeshQuality)"));
+    connect(meshQualityAction, &QAction::triggered,this, [this](bool checked) {
+
+        auto model =rendererWidget->GetScene()->GetCurrentModel();
+        if (model == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("Warning"),QStringLiteral("当前没有打开模型。"));
+            return;
+        }
+        auto data = model->GetDataObject();
+        if (data == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("Warning"),QStringLiteral("当前模型没有数据。"));
+            return;
+        }
+
+        igQtFilterDialogDockWidget* dialog =new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("MeshQuality - 网格质量评估"));
+
+        // 三角形
+        std::vector<QString> triangleMetrics = {
+            QStringLiteral("FACE_AREA"),
+            QStringLiteral("MAX_ANGLE"),
+            QStringLiteral("MIN_ANGLE"),
+            QStringLiteral("JACOBIAN"),
+            QStringLiteral("ASPECT_RATIO"),
+            QStringLiteral("EDGE_RATIO"),
+            QStringLiteral("ANGLE_QUALITY"),
+            QStringLiteral("FACE_MIN_ANGLE"),
+            QStringLiteral("FACE_MAX_ANGLE"),
+            QStringLiteral("FACE_MIN_ANGLE_QUALITY")
+        };
+        int triangleId =
+            dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,QStringLiteral("Triangle 质量指标"),triangleMetrics);
+
+        // 四边形
+        std::vector<QString> quadMetrics = {
+            QStringLiteral("FACE_AREA"),
+            QStringLiteral("MAX_ANGLE"),
+            QStringLiteral("MIN_ANGLE"),
+            QStringLiteral("JACOBIAN"),
+            QStringLiteral("ASPECT_RATIO"),
+            QStringLiteral("EDGE_RATIO"),
+            QStringLiteral("WARPAGE"),
+            QStringLiteral("TAPER"),
+            QStringLiteral("SKEW"),
+            QStringLiteral("ANGLE_QUALITY"),
+            QStringLiteral("FACE_MIN_ANGLE"),
+            QStringLiteral("FACE_MAX_ANGLE"),
+            QStringLiteral("FACE_MIN_ANGLE_QUALITY")
+        };
+        int quadId =
+            dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,QStringLiteral("Quad 质量指标"),quadMetrics);
+
+        // 四面体
+        std::vector<QString> tetMetrics = {
+            QStringLiteral("TET_EDGE_RATIO"),
+            QStringLiteral("TET_VOLUME"),
+            QStringLiteral("TET_ASPECT_RATIO"),
+            QStringLiteral("TET_JACOBIAN"),
+            QStringLiteral("TET_COLLAPSE_RATIO"),
+            QStringLiteral("TET_VOL_SKEW"),
+            QStringLiteral("TET_MIN_ANGLE"),
+            QStringLiteral("TET_EQUIANGLE_SKEWNESS"),
+            QStringLiteral("TET_INRADIUS"),
+            QStringLiteral("TET_CIRCUMRADIUS"),
+            QStringLiteral("TET_VOL_ASPECT_RATIO"),
+            QStringLiteral("TET_ASPECT_RATIO_ALT"),
+            QStringLiteral("TET_VOLUME_ALT")
+        };
+        int tetId =dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,QStringLiteral("Tetra 质量指标"),tetMetrics);
+
+        // 六面体
+        std::vector<QString> hexMetrics = {
+            QStringLiteral("HEX_VOLUME"),
+            QStringLiteral("HEX_TAPER"),
+            QStringLiteral("HEX_JACOBIAN"),
+            QStringLiteral("HEX_EDGE_RATIO"),
+            QStringLiteral("HEX_MAX_EDGE_RATIO"),
+            QStringLiteral("HEX_SKEW"),
+            QStringLiteral("HEX_STRETCH"),
+            QStringLiteral("HEX_DIAGONAL"),
+            QStringLiteral("HEX_RELATIVE_SIZE_SQUARED"),
+            QStringLiteral("HEX_MIN_SCALED_JACOBIAN"),
+            QStringLiteral("HEX_AVG_SCALED_JACOBIAN"),
+            QStringLiteral("HEX_VOLUME_ALT")
+        };
+        int hexId =dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX,QStringLiteral("Hexahedron 质量指标"),hexMetrics);
+
+        using SurfaceMetric = SurfaceMeshMetricsFilter::SurfaceMetric;
+        using VolumeMetric = VolumeMeshMetricsFilter::VolumeMetric;
+
+        // Triangle
+        std::vector<SurfaceMetric> triangleMetricValues = {
+            SurfaceMetric::FACE_AREA,
+            SurfaceMetric::MAX_ANGLE,
+            SurfaceMetric::MIN_ANGLE,
+            SurfaceMetric::JACOBIAN,
+            SurfaceMetric::ASPECT_RATIO,
+            SurfaceMetric::EDGE_RATIO,
+            SurfaceMetric::ANGLE_QUALITY,
+            SurfaceMetric::FACE_MIN_ANGLE,
+            SurfaceMetric::FACE_MAX_ANGLE,
+            SurfaceMetric::FACE_MIN_ANGLE_QUALITY
+        };
+
+        // Quad
+        std::vector<SurfaceMetric> quadMetricValues = {
+            SurfaceMetric::FACE_AREA,
+            SurfaceMetric::MAX_ANGLE,
+            SurfaceMetric::MIN_ANGLE,
+            SurfaceMetric::JACOBIAN,
+            SurfaceMetric::ASPECT_RATIO,
+            SurfaceMetric::EDGE_RATIO,
+            SurfaceMetric::WARPAGE,
+            SurfaceMetric::TAPER,
+            SurfaceMetric::SKEW,
+            SurfaceMetric::ANGLE_QUALITY,
+            SurfaceMetric::FACE_MIN_ANGLE,
+            SurfaceMetric::FACE_MAX_ANGLE,
+            SurfaceMetric::FACE_MIN_ANGLE_QUALITY
+        };
+
+        // Tet
+        std::vector<VolumeMetric> tetMetricValues = {
+            VolumeMetric::TET_EDGE_RATIO,
+            VolumeMetric::TET_VOLUME,
+            VolumeMetric::TET_ASPECT_RATIO,
+            VolumeMetric::TET_JACOBIAN,
+            VolumeMetric::TET_COLLAPSE_RATIO,
+            VolumeMetric::TET_VOL_SKEW,
+            VolumeMetric::TET_MIN_ANGLE,
+            VolumeMetric::TET_EQUIANGLE_SKEWNESS,
+            VolumeMetric::TET_INRADIUS,
+            VolumeMetric::TET_CIRCUMRADIUS,
+            VolumeMetric::TET_VOL_ASPECT_RATIO,
+            VolumeMetric::TET_ASPECT_RATIO_ALT,
+            VolumeMetric::TET_VOLUME_ALT
+        };
+
+        // Hex
+        std::vector<VolumeMetric> hexMetricValues = {
+            VolumeMetric::HEX_VOLUME,
+            VolumeMetric::HEX_TAPER,
+            VolumeMetric::HEX_JACOBIAN,
+            VolumeMetric::HEX_EDGE_RATIO,
+            VolumeMetric::HEX_MAX_EDGE_RATIO,
+            VolumeMetric::HEX_SKEW,
+            VolumeMetric::HEX_STRETCH,
+            VolumeMetric::HEX_DIAGONAL,
+            VolumeMetric::HEX_RELATIVE_SIZE_SQUARED,
+            VolumeMetric::HEX_MIN_SCALED_JACOBIAN,
+            VolumeMetric::HEX_AVG_SCALED_JACOBIAN,
+            VolumeMetric::HEX_VOLUME_ALT
+        };
+
+        dialog->show();
+
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = true;
+            int triangleIndex =dialog->getComboIndex(triangleId, ok);
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("Triangle 质量指标获取失败。"));
+                return;
+            }
+            int quadIndex =dialog->getComboIndex(quadId, ok);
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("Quad 质量指标获取失败。"));
+                return;
+            }
+            int tetIndex =dialog->getComboIndex(tetId, ok);
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("Tetra 质量指标获取失败。"));
+                return;
+            }
+            int hexIndex =dialog->getComboIndex(hexId, ok);
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("Hexahedron 质量指标获取失败。"));
+                return;
+            }
+
+            MeshQualityFilter::Pointer filter =MeshQualityFilter::New();
+            filter->SetInput(data);
+            filter->SetTriangleMetric(triangleMetricValues[triangleIndex]);
+            filter->SetQuadMetric(quadMetricValues[quadIndex]);
+            filter->SetTetMetric(tetMetricValues[tetIndex]);
+            filter->SetHexMetric(hexMetricValues[hexIndex]);
+
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"),QString::fromStdString("MeshQuality执行失败"));
+                return;
+            }
+            double minQuality = filter->GetMinimum();
+            double maxQuality = filter->GetMaximum();
+            QString qualityText =QString("Quality: [%1, %2]").arg(minQuality, 0, 'g', 15).arg(maxQuality, 0, 'g', 15);
+            showDarkFramelessMessage(QStringLiteral("Mesh Quality"),qualityText);
+
+            modelTreeWidget->updateAllAttriubute(data);
+            auto drawObject =DynamicCast<DrawObject>(data);
+            if (drawObject) {
+                auto item =modelTreeWidget->getItemFromObject(data);
+                if (item && item->childCount() > 0) {
+                    item->setExpanded(true);
+                    int index =data->GetAttributeIndex();
+                    auto child =item->child(index);
+                    if (child) {
+                        item->setCurrentChild(child);
+                        item->setSelected(false);
+                        item->viewAttribute(index, -1);
+                        child->setSelected(true);
+                        modelTreeWidget->setCurrentItem(child);
+                    }
+                }
+            }
+
+            rendererWidget->update();
+        });
+    });
+
+    
+        
+
+    // 提取分量 (Extract Component)：从多分量数组（向量/张量）提取单个分量生成标量属性，
+    // 打开左侧工具面板（继承语义：首次执行新增模型树节点，再次执行更新结果节点）
+    QAction* extractComponent = ui->menu_filters->addAction(QStringLiteral("提取分量 (Extract Component)"));
+    connect(extractComponent, &QAction::triggered, this, [this](bool checked) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        auto data = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (data == nullptr) return;
+        openLeftToolPanel(LeftToolPanelId::ExtractComponent);
+        ui->widget_ExtractComponent->SetOriginDataObject(data);
+    });
+
+    // 新增 Transform 菜单项
+    QAction* transformAction =ui->menu_filters->addAction(QStringLiteral("通用几何变换 (Transform)"));
+    connect(transformAction, &QAction::triggered, this, [this](bool checked) {
+        // 获取当前模型
+        auto model = rendererWidget->GetScene()->GetCurrentModel();
+        if (model == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("Warning"),QStringLiteral("当前没有打开模型。"));
+            return;
+        }
+        auto data = model->GetDataObject();
+        if (data == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("Warning"),QStringLiteral("当前模型没有数据。"));
+            return;
+        }
+
+        // 创建参数窗口
+        igQtFilterDialogDockWidget* dialog =new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("Transform - 通用几何变换"));
+
+        int txId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("平移 X"),"0.0");
+        int tyId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("平移 Y"),"0.0");
+        int tzId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("平移 Z"),"0.0");
+        int rxId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("旋转 X（角度）"),"0.0");
+        int ryId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("旋转 Y（角度）"),"0.0");
+        int rzId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("旋转 Z（角度）"),"0.0");
+        int sxId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("缩放 X"),"1.0");
+        int syId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("缩放 Y"),"1.0");
+        int szId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,QStringLiteral("缩放 Z"),"1.0");
+        dialog->show();
+
+        dialog->setApplyFunctor([=, this]() {
+            bool ok = true;
+            float tx = static_cast<float>(dialog->getDouble(txId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("平移 X 不是有效数字。"));
+                return;
+            }
+            float ty = static_cast<float>(dialog->getDouble(tyId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("平移 Y 不是有效数字。"));
+                return;
+            }
+            float tz = static_cast<float>(dialog->getDouble(tzId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("平移 Z 不是有效数字。"));
+                return;
+            }
+            float rx = static_cast<float>(dialog->getDouble(rxId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("旋转 X 不是有效数字。"));
+                return;
+            }
+            float ry = static_cast<float>(dialog->getDouble(ryId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("旋转 Y 不是有效数字。"));
+                return;
+            }
+            float rz = static_cast<float>(dialog->getDouble(rzId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("旋转 Z 不是有效数字。"));
+                return;
+            }
+            float sx = static_cast<float>(dialog->getDouble(sxId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("缩放 X 不是有效数字。"));
+                return;
+            }
+            float sy = static_cast<float>(dialog->getDouble(syId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("缩放 Y 不是有效数字。"));
+                return;
+            }
+            float sz = static_cast<float>(dialog->getDouble(szId, ok));
+            if (!ok) {
+                showDarkFramelessMessage(QStringLiteral("参数错误"),QStringLiteral("缩放 Z 不是有效数字。"));
+                return;
+            }
+
+            TransformFilter::Pointer filter =TransformFilter::New();
+            filter->SetInput(data);
+            filter->SetTranslation(tx, ty, tz);
+            filter->SetRotation(rx, ry, rz);
+            filter->SetScale(sx, sy, sz);
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("Warning"),QStringLiteral("Transform 执行失败。"));
+                return;
+            }
+            auto outObj = filter->GetOutput();
+            modelTreeWidget->addDataObjectToModelTree(outObj, Algorithm);
+            rendererWidget->update();
+        });
+    });
+
+    
+    connect(ui->widget_ExtractComponent, &igQtExtractComponentWidget::DrawExtractComponentModel, this,
+            [this](iGame::DataObject::Pointer res) {
+                modelTreeWidget->addDataObjectToModelTree(res, ItemSource::Algorithm);
+            });
+    connect(ui->widget_ExtractComponent, &igQtExtractComponentWidget::UpdateExtractComponentModel, this,
+            [this](iGame::DataObject::Pointer res) {
+                modelTreeWidget->updateCurrentModelInfo();
+                rendererWidget->update();
+            });
+    connect(ui->widget_ExtractComponent, &igQtExtractComponentWidget::ApplyFailed, this,
+            [this](const QString& message) {
+                showDarkFramelessMessage(QStringLiteral("Warning"), message);
+            });
 
     QAction* gradient = view->addAction(QStringLiteral("计算梯度 (ComputeGradient)"));
     connect(gradient, &QAction::triggered, this, [this](bool checked) {
@@ -2866,6 +4122,195 @@ void igQtMainWindow::initAllFilters() {
         }
     });
 
+    
+    QAction* cellMeshMetrics = ui->menu_filters->addAction(QStringLiteral("单元网格指标 (CellMeshMetrics)"));
+    connect(cellMeshMetrics, &QAction::triggered, this, [&](bool checked) {
+        // 1. 创建对话框
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("单元网格指标 (Cell Mesh Metrics)"));
+
+        // 2. 创建下拉框
+        std::vector<QString> metricNames = {QStringLiteral("四面体: 边长比 (Edge Ratio)"),
+                                            QStringLiteral("四面体: 单元体积 (Volume)"),
+                                            QStringLiteral("四面体: 纵横比 (Aspect Ratio)"),
+                                            QStringLiteral("四面体: 雅可比 (Jacobian)"),
+                                            QStringLiteral("四面体: 塌陷率 (Collapse Ratio)"),
+                                            QStringLiteral("四面体: 体积歪斜度 (Vol Skew)"),
+                                            QStringLiteral("四面体: 最小内角 (Min Angle)"),
+                                            QStringLiteral("四面体: 等角斜率 (Equiangle Skewness)"),
+                                            QStringLiteral("四面体: 内切球半径 (Inradius)"),
+                                            QStringLiteral("四面体: 外接球半径 (Circumradius)"),
+                                            QStringLiteral("四面体: 体长宽比 (Vol Aspect Ratio)"),
+                                            QStringLiteral("六面体: 单元体积 (Volume)"),
+                                            QStringLiteral("六面体: 锥度 (Taper)"),
+                                            QStringLiteral("六面体: 雅可比矩阵 (Jacobian)"),
+                                            QStringLiteral("六面体: 边长比 (Edge Ratio)"),
+                                            QStringLiteral("六面体: 最大长宽比 (Max Edge Ratio)"),
+                                            QStringLiteral("六面体: 歪斜度 (Skew)"),
+                                            QStringLiteral("六面体: 伸展度 (Stretch)"),
+                                            QStringLiteral("六面体: 对角线比值 (Diagonal)"),
+                                            QStringLiteral("六面体: 相对大小平方 (Relative Size)"),
+                                            QStringLiteral("六面体: 最小标量雅可比 (Min Scaled Jacobian)"),
+                                            QStringLiteral("六面体: 平均标量雅可比 (Avg Scaled Jacobian)")};
+
+        std::vector<iGame::VolumeMeshMetricsFilter::VolumeMetric> metricEnums = {
+                iGame::VolumeMeshMetricsFilter::TET_EDGE_RATIO,
+                iGame::VolumeMeshMetricsFilter::TET_VOLUME,
+                iGame::VolumeMeshMetricsFilter::TET_ASPECT_RATIO,
+                iGame::VolumeMeshMetricsFilter::TET_JACOBIAN,
+                iGame::VolumeMeshMetricsFilter::TET_COLLAPSE_RATIO,
+                iGame::VolumeMeshMetricsFilter::TET_VOL_SKEW,
+                iGame::VolumeMeshMetricsFilter::TET_MIN_ANGLE,
+                iGame::VolumeMeshMetricsFilter::TET_EQUIANGLE_SKEWNESS,
+                iGame::VolumeMeshMetricsFilter::TET_INRADIUS,
+                iGame::VolumeMeshMetricsFilter::TET_CIRCUMRADIUS,
+                iGame::VolumeMeshMetricsFilter::TET_VOL_ASPECT_RATIO,
+                iGame::VolumeMeshMetricsFilter::HEX_VOLUME,
+                iGame::VolumeMeshMetricsFilter::HEX_TAPER,
+                iGame::VolumeMeshMetricsFilter::HEX_JACOBIAN,
+                iGame::VolumeMeshMetricsFilter::HEX_EDGE_RATIO,
+                iGame::VolumeMeshMetricsFilter::HEX_MAX_EDGE_RATIO,
+                iGame::VolumeMeshMetricsFilter::HEX_SKEW,
+                iGame::VolumeMeshMetricsFilter::HEX_STRETCH,
+                iGame::VolumeMeshMetricsFilter::HEX_DIAGONAL,
+                iGame::VolumeMeshMetricsFilter::HEX_RELATIVE_SIZE_SQUARED,
+                iGame::VolumeMeshMetricsFilter::HEX_MIN_SCALED_JACOBIAN,
+                iGame::VolumeMeshMetricsFilter::HEX_AVG_SCALED_JACOBIAN};
+        int comboID =
+                dialog->addParameter(igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("评估指标"), metricNames);
+        dialog->show();
+
+        // 3. 确认回调逻辑
+        dialog->setApplyFunctor([=, this]() {
+            // 3.1 获取当前模型和数据对象
+            if (rendererWidget->GetScene() == nullptr || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+                showDarkFramelessMessage(QStringLiteral("无可用模型"),
+                                         QStringLiteral("请先在模型树中选中需要评估的体网格模型。"));
+                dialog->close();
+                return;
+            }
+            auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+            if (obj == nullptr) {
+                showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型数据对象为空。"));
+                dialog->close();
+                return;
+            }
+
+            // 3.2 获取选择的指标
+            bool ok = false;
+            int selectedIndex = dialog->getComboIndex(comboID, ok);
+            if (!ok || selectedIndex < 0 || selectedIndex >= metricEnums.size()) {
+                showDarkFramelessMessage(QStringLiteral("无效选择"), QStringLiteral("请选择一个有效的评估指标。"));
+                dialog->close();
+                return;
+            }
+            auto metric = metricEnums[selectedIndex];
+
+            // 3.3 执行filter
+            auto filter = iGame::CellMeshMetricsFilter::New();
+            filter->setMetric(metric);
+            filter->SetInput(obj);
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(
+                        QStringLiteral("计算失败"),
+                        QStringLiteral("单元质量评估执行失败，请检查是否为合法体单元（四面体/六面体）。"));
+                dialog->close();
+                return;
+            }
+
+            // 3.4 属性已挂载到原模型上，刷新模型树即可
+            modelTreeWidget->updateAllAttriubute(obj);
+        });
+    });
+
+    connect(ui->menu_filters->addAction("多块模型表面提取"), &QAction::triggered, this, [&](bool checked) {
+        if (!rendererWidget) {
+            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("渲染器组件未初始化。"));
+        }
+
+        auto scene = rendererWidget->GetScene();
+        if (!scene) {
+            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("场景未初始化。"));
+            return;
+        }
+
+        auto currentModel = scene->GetCurrentModel();
+        if (!currentModel) {
+            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("未能获取当前选定模型。"));
+            return;
+        }
+
+        auto obj = currentModel->GetDataObject();
+        if (!obj) {
+            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("未能获取DataObject。"));
+            return;
+        }
+
+        auto multiBlockFilter = MultiBlockGeometryFilter::New();
+        multiBlockFilter->SetInput(obj);
+        if (!multiBlockFilter->Execute()) {
+            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("多块模型表面提取失败。"));
+            return;
+        }
+
+        auto multiBlockObj = multiBlockFilter->GetOutput();
+        multiBlockObj->SetName(obj->GetName() + "_MultiBlockSurface");
+        modelTreeWidget->addDataObjectToModelTree(multiBlockObj, Algorithm);
+
+        rendererWidget->update();
+       });
+  
+    QAction* featureRegion = ui->menu_filters->addAction(QStringLiteral("特征区域Id (FeatureEdgeRegion id)"));
+    connect(featureRegion, &QAction::triggered, this, [&](bool checked) {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        auto data = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        auto surfaceMesh = DynamicCast<SurfaceMesh>(data);
+
+        if (surfaceMesh == nullptr) {
+            showDarkFramelessMessage(
+                    QStringLiteral("非表面网格"),
+                    QStringLiteral("请先使用“表面提取 (Surface Extraction)”将当前模型转换为表面网格。"));
+            return;
+        }
+        dialog->setFilterTitle(QStringLiteral("特征区域id"));
+        int angleId =
+                dialog->addParameter(igQtFilterDialogDockWidget ::QT_LINE_EDIT, QStringLiteral("特征角度"), "30.0");
+        dialog->show();
+        dialog->setApplyFunctor([=, this]() {
+            bool ok;
+            double angle = dialog->getDouble(angleId, ok);
+            FeatureEdgesFilter::Pointer featureEdgeFilter = FeatureEdgesFilter::New();
+            featureEdgeFilter->SetInput(surfaceMesh);
+            featureEdgeFilter->SetFeatureAngle(angle);
+            featureEdgeFilter->SetBoundaryEdges(true);
+            featureEdgeFilter->SetFeatureEdges(true);
+            featureEdgeFilter->SetNonManifoldEdges(true);
+            featureEdgeFilter->SetManifoldEdges(false);
+
+            DataObject::Pointer featureEdgeOutput;
+            UnstructuredMesh::Pointer featureEdgeMesh;
+            if (featureEdgeFilter->Execute()) {
+                featureEdgeOutput = featureEdgeFilter->GetOutput();
+                if (featureEdgeOutput != nullptr) {
+                    featureEdgeMesh = DynamicCast<UnstructuredMesh>(featureEdgeOutput);
+                }
+            }
+            if (featureEdgeMesh == nullptr) featureEdgeMesh = UnstructuredMesh::New();
+            auto filter = FeatureEdgeRegionFilter::New();
+            filter->SetInput(0, surfaceMesh);
+            filter->SetInput(1, featureEdgeMesh);
+
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("执行失败"), QStringLiteral("生成区域id失败"));
+                return;
+            }
+            modelTreeWidget->updateAllAttriubute(surfaceMesh);
+            rendererWidget->update();
+            dialog->close();
+        });
+    });
+
     connect(ui->menu_filters->addAction(QStringLiteral("体网格简化 (Volume Mesh Simplification)")), &QAction::triggered,
             this, [&](bool checked) {
                 if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
@@ -3025,7 +4470,7 @@ void igQtMainWindow::initAllFilters() {
             showDarkFramelessMessage(QStringLiteral("Warning"), QString::fromStdString(message));
         }
     });
-QAction* passArrays = ui->menu_filters->addAction(QStringLiteral("传递过滤数据数组 (Pass Arrays)"));
+    QAction* passArrays = ui->menu_filters->addAction(QStringLiteral("传递过滤数据数组 (Pass Arrays)"));
     connect(passArrays, &QAction::triggered, this, [this](bool) {
         auto model = rendererWidget->GetScene()->GetCurrentModel();
         if (!model) return;
@@ -3168,6 +4613,227 @@ QAction* passArrays = ui->menu_filters->addAction(QStringLiteral("传递过滤�
         connect(buttonBox, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
 
         dlg->show();
+    });
+QAction* volRevAction = ui->menu_filters->addAction(QStringLiteral("旋转体生成 (Volume of Revolution)"));
+    connect(volRevAction, &QAction::triggered, this, [this]() {
+        if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+            showDarkFramelessMessage(
+                    QStringLiteral("提示"),
+                    QStringLiteral("请先加载轮廓线网格（UnstructuredMesh/SurfaceMesh/StructuredMesh）。"));
+            return;
+        }
+        auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+        if (!obj) return;
+
+        IGenum type = obj->GetDataObjectType();
+        if (type != IG_UNSTRUCTURED_MESH && type != IG_SURFACE_MESH && type != IG_STRUCTURED_MESH) {
+            showDarkFramelessMessage(
+                    QStringLiteral("不支持"),
+                    QStringLiteral("输入必须是 UnstructuredMesh或者SurfaceMesh或者StructuredMesh类型的轮廓线。"));
+            return;
+        }
+
+        // 弹出参数对话框
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("旋转体生成"));
+        dialog->setFilterDescription(QStringLiteral("设置旋转轴、分段数和角度"));
+        int resId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("分段数"), "36");
+        int angleId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("旋转角度 (度)"),
+                                           "360.0");
+
+        int axisXId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴向 X"), "0.0");
+        int axisYId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴向 Y"), "0.0");
+        int axisZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴向 Z"), "1.0");
+
+
+        int pointXId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴点 X"), "0.0");
+        int pointYId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴点 Y"), "0.0");
+        int pointZId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("轴点 Z"), "0.0");
+
+        dialog->show();
+
+        dialog->setApplyFunctor([this, obj, axisXId, axisYId, axisZId, pointXId, pointYId, pointZId, resId, angleId,
+                                 dialog]() {
+            bool ok = true;
+            // 读取轴向分量
+            auto getDouble = [&](int id, double& val, const QString& name) -> bool {
+                QLineEdit* edit = qobject_cast<QLineEdit*>(dialog->getWidget(id));
+                if (!edit) {
+                    showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("无法获取控件：") + name);
+                    return false;
+                }
+                val = edit->text().toDouble(&ok);
+                if (!ok) {
+                    showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("请输入有效的数值：") + name);
+                    return false;
+                }
+                return true;
+            };
+            double ax, ay, az, px, py, pz;
+            if (!getDouble(axisXId, ax, "轴向 X")) return;
+            if (!getDouble(axisYId, ay, "轴向 Y")) return;
+            if (!getDouble(axisZId, az, "轴向 Z")) return;
+            if (!getDouble(pointXId, px, "轴点 X")) return;
+            if (!getDouble(pointYId, py, "轴点 Y")) return;
+            if (!getDouble(pointZId, pz, "轴点 Z")) return;
+
+            Vector3d dir(ax, ay, az);
+            if (dir.norm() < 1e-12) {
+                showDarkFramelessMessage(QStringLiteral("错误"),
+                                         QStringLiteral("轴向方向向量不能为零，请至少一个分量非零。"));
+                return;
+            }
+            dir.normalize();
+
+            Vector3d point(px, py, pz);
+            // 获取分段数
+            QLineEdit* resEdit = qobject_cast<QLineEdit*>(dialog->getWidget(resId));
+            if (!resEdit) {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("无法获取分段数输入框。"));
+                return;
+            }
+            int resolution = resEdit->text().toInt(&ok);
+            if (!ok || resolution < 3) {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("分段数至少为 3。"));
+                return;
+            }
+
+            QLineEdit* angleEdit = qobject_cast<QLineEdit*>(dialog->getWidget(angleId));
+            if (!angleEdit) {
+                showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("无法获取角度输入框。"));
+                return;
+            }
+            double angleDeg = angleEdit->text().toDouble(&ok);
+            if (!ok ) {
+                showDarkFramelessMessage(QStringLiteral("错误"),
+                                         QStringLiteral("请输入有效的角度（单位：度）。"));
+                return;
+            }
+            double angleRad = angleDeg * M_PI / 180.0;
+
+
+            auto filter = VolumeOfRevolutionFilter::New();
+            filter->SetAxis(dir, point);
+            filter->SetResolution(resolution);
+            filter->SetAngle(angleRad);
+            filter->SetInput(obj);
+
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("执行失败"), QStringLiteral("旋转体生成失败，请检查轮廓线。"));
+                return;
+            }
+            auto output = filter->GetOutput();
+            if (output) {
+                output->SetName(obj->GetName() + QStringLiteral("_revolution").toStdString());
+                modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
+                rendererWidget->update();
+                dialog->close();
+            }
+        });
+    });
+
+    // ===== 任务入口：加入「算法处理」一级菜单 =====
+    // 简单任务 #5（统计单元顶点数）+ 中等任务 #28（边提取）
+    // 与"数据处理/数据转换/特征提取"子菜单并列，作为一级菜单项追加在末尾
+    ui->menu_filters->addAction(ui->action_ExtractEdges);
+    ui->menu_filters->addAction(ui->action_CountCellVertices);
+    // ===== AppendReduce: 网格合并去重 =====
+    QAction* appendReduceAction = ui->menu_filters->addAction(
+            QStringLiteral("网格合并去重 (Append/Reduce)"));
+    connect(appendReduceAction, &QAction::triggered, this, [&](bool checked) {
+        auto scene = rendererWidget->GetScene();
+        if (!scene) return;
+
+        auto modelList = scene->GetModelList();
+        if (!modelList) return;
+
+        int meshCount = 0;
+        for (auto it = modelList->Begin(); it != modelList->End(); ++it) {
+            auto model = it->second;
+            if (model && model->GetDataObject()) meshCount++;
+        }
+        if (meshCount == 0) return;
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("网格合并去重 (Append/Reduce)"));
+        dialog->setFilterDescription(QStringLiteral(
+            "将场景中所有网格合并为一个。\n"
+            "开启「合并重复顶点」可消除接缝处的冗余顶点。\n"
+            "同时合并所有输入网格共有的点属性和单元属性。"));
+        int mergeId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+            QStringLiteral("合并重复顶点"), "true");
+        int tolId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+            QStringLiteral("合并容差"), "1e-6");
+
+        auto tuneDialog = [](igQtFilterDialogDockWidget* d) {
+            constexpr int kDialogWidth = 360;
+            d->setFixedWidth(kDialogWidth);
+            if (auto* sa = d->findChild<QScrollArea*>(QStringLiteral("scrollArea"))) {
+                sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+                sa->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            }
+        };
+        tuneDialog(dialog);
+        dialog->show();
+
+        dialog->setApplyFunctor([=, this]() {
+            bool ok;
+            bool mergePoints = dialog->getChecked(mergeId, ok);
+            float tolerance = (float)dialog->getDouble(tolId, ok);
+            if (tolerance <= 0) tolerance = 1e-6f;
+
+            auto filter = AppendReduceFilter::New();
+            filter->SetMergePoints(mergePoints);
+            filter->SetTolerance(tolerance);
+
+            auto mList = rendererWidget->GetScene()->GetModelList();
+            int count = 0;
+            for (auto it = mList->Begin(); it != mList->End(); ++it) {
+                auto model = it->second;
+                if (model) {
+                    auto obj = model->GetDataObject();
+                    if (obj) {
+                        filter->AddInput(obj);
+                        count++;
+                    }
+                }
+            }
+
+            if (count <= 0) return;
+
+            if (filter->Execute()) {
+                auto outMesh = DynamicCast<SurfaceMesh>(filter->GetOutput());
+                if (outMesh) {
+                    outMesh->SetName("append_reduce_result");
+                    modelTreeWidget->addDataObjectToModelTree(outMesh, Algorithm);
+
+                    auto attrSet = outMesh->GetAttributeSet();
+                    if (attrSet) {
+                        int pointAttrIdx = -1;
+                        int cellAttrIdx = -1;
+                        for (int i = 0; i < (int)attrSet->GetNumberOfAttributes(); i++) {
+                            auto& attr = attrSet->GetAttribute(i);
+                            if (attr.IsNone() || attr.isDeleted || attr.type != IG_SCALAR) continue;
+                            if (attr.attachmentType == IG_POINT && pointAttrIdx < 0) {
+                                pointAttrIdx = i;
+                            } else if (attr.attachmentType == IG_CELL && cellAttrIdx < 0) {
+                                cellAttrIdx = i;
+                            }
+                        }
+                        int activeIdx = (pointAttrIdx >= 0) ? pointAttrIdx : cellAttrIdx;
+                        if (activeIdx >= 0) {
+                            auto scene = rendererWidget->GetScene();
+                            if (scene) {
+                                outMesh->ViewCloudPicture(scene, activeIdx, 0);
+                            }
+                        }
+                    }
+
+                    rendererWidget->update();
+                }
+                dialog->close();
+            }
+        });
     });
 
 }
@@ -3562,6 +5228,26 @@ void igQtMainWindow::initAllDockWidgetConnectWithAction() {
         if (!dataObject) return;
         ui->widget_ContourExtract->SetOriginDataObject(dataObject);
     });
+    connect(ui->action_ExtractEdges, &QAction::triggered, this, [this](bool) {
+        openLeftToolPanel(LeftToolPanelId::ExtractEdges);
+        auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
+        if (!scene) return;
+        auto CurrentModel = scene->GetCurrentModel();
+        if (!CurrentModel) return;
+        auto dataObject = CurrentModel->GetDataObject();
+        if (!dataObject) return;
+        ui->widget_ExtractEdges->SetOriginDataObject(dataObject);
+    });
+    connect(ui->action_CountCellVertices, &QAction::triggered, this, [this](bool) {
+        openLeftToolPanel(LeftToolPanelId::CountCellVertices);
+        auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
+        if (!scene) return;
+        auto CurrentModel = scene->GetCurrentModel();
+        if (!CurrentModel) return;
+        auto dataObject = CurrentModel->GetDataObject();
+        if (!dataObject) return;
+        ui->widget_CountCellVertices->SetOriginDataObject(dataObject);
+    });
     connect(ui->action_GenerateChart, &QAction::triggered, this, [&](bool checked) {
         auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
         if (!scene) return;
@@ -3849,11 +5535,14 @@ QDockWidget* igQtMainWindow::shellDockForLeftPanel(LeftToolPanelId id) const {
     case LeftToolPanelId::Flow: return ui->dockWidget_FlowField;
     case LeftToolPanelId::ContourExtract: return ui->dockWidget_ContourExtract;
     case LeftToolPanelId::GenerateProcessIds: return ui->dockWidget_GenerateProcessIds;
+    case LeftToolPanelId::ExtractEdges: return ui->dockWidget_ExtractEdges;
+    case LeftToolPanelId::CountCellVertices: return ui->dockWidget_CountCellVertices;
     case LeftToolPanelId::Slice: return SliceDockWidget;
     case LeftToolPanelId::Deformation: return DeformationDockWidget;
     case LeftToolPanelId::Selection: return ui->dockWidget_SelectionField;
     case LeftToolPanelId::VariableDensity: return ui->dockWidget_VariableDensityField;
     case LeftToolPanelId::DataChange: return ui->dockWidget_DataChangeField;
+    case LeftToolPanelId::ExtractComponent: return ui->dockWidget_ExtractComponent;
     case LeftToolPanelId::ExtractCellsByType: return m_extractCellsByTypeShell;
     case LeftToolPanelId::Count: return nullptr;
     }
@@ -3945,6 +5634,12 @@ void igQtMainWindow::openLeftToolPanel(LeftToolPanelId id) {
     case LeftToolPanelId::GenerateProcessIds:
         relocateContentToLeftTab(ui->dockWidget_GenerateProcessIds, ui->widget_GenerateProcessIds, QStringLiteral("生成进程ID"), id, false);
         break;
+    case LeftToolPanelId::ExtractEdges:
+        relocateContentToLeftTab(ui->dockWidget_ExtractEdges, ui->widget_ExtractEdges, QStringLiteral("边提取"), id, false);
+        break;
+    case LeftToolPanelId::CountCellVertices:
+        relocateContentToLeftTab(ui->dockWidget_CountCellVertices, ui->widget_CountCellVertices, QStringLiteral("统计单元顶点数"), id, false);
+        break;
     case LeftToolPanelId::Slice:
         relocateContentToLeftTab(SliceDockWidget, SliceWidget, QStringLiteral("网格切面"), id, false);
         break;
@@ -3960,6 +5655,10 @@ void igQtMainWindow::openLeftToolPanel(LeftToolPanelId id) {
         break;
     case LeftToolPanelId::DataChange:
         relocateContentToLeftTab(ui->dockWidget_DataChangeField, ui->widget_DataChangeField, QStringLiteral("路径图"), id,
+                                 false);
+        break;
+    case LeftToolPanelId::ExtractComponent:
+        relocateContentToLeftTab(ui->dockWidget_ExtractComponent, ui->widget_ExtractComponent, QStringLiteral("提取分量"), id,
                                  false);
         break;
     case LeftToolPanelId::ExtractCellsByType:
@@ -4042,6 +5741,16 @@ void igQtMainWindow::initAllMySignalConnections() {
         ui->widget_Animation->initAnimationComponents();
     });
     connect(fileLoader, &igQtFileLoader::FinishReading, DeformationWidget, &igQtDeformationWidget::updateInfo);
+
+    connect(ui->widget_ExtractEdges, &igQtExtractEdgesWidget::DrawEdgesModel, this,
+            [&](iGame::DataObject::Pointer res) {
+                modelTreeWidget->addDataObjectToModelTree(res, ItemSource::Algorithm);
+            });
+    connect(ui->widget_ExtractEdges, &igQtExtractEdgesWidget::UpdateEdgesModel, this,
+            [&](DataObject::Pointer mesh) {
+                modelTreeWidget->updateCurrentModelInfo();
+                rendererWidget->update();
+            });
 
     connect(fileLoader, &igQtFileLoader::FinishReading, this, [&]() {
         auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
