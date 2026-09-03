@@ -120,11 +120,17 @@ bool ForceStaticMeshFilter::IsValidCache(const DataObject::Pointer& input) {
     if (inPs == nullptr || cachePs == nullptr) return false;
     if (inPs->GetNumberOfPoints() != cachePs->GetNumberOfPoints()) return false;
 
-    auto inCells = input->GetCellArray();
-    auto cacheCells = m_Cache->GetCellArray();
-    const IGsize inCellNum = inCells ? inCells->GetNumberOfCells() : 0;
-    const IGsize cacheCellNum = cacheCells ? cacheCells->GetNumberOfCells() : 0;
-    return inCellNum == cacheCellNum;
+    // 按网格类型取真实单元数：StructuredMesh 单元由维度隐式决定且 GetCellArray 为空，
+    // 直接用它的 GetNumberOfCells()，避免"始终为 0"导致判断失效。
+    auto cellCount = [](const DataObject::Pointer& obj) -> IGsize {
+        if (auto st = DynamicCast<StructuredMesh>(obj)) return st->GetNumberOfCells();
+        if (auto vm = DynamicCast<VolumeMesh>(obj)) return vm->GetNumberOfVolumes();
+        if (auto sm = DynamicCast<SurfaceMesh>(obj)) return sm->GetNumberOfFaces();
+        if (auto um = DynamicCast<UnstructuredMesh>(obj)) return um->GetNumberOfCells();
+        auto ca = obj ? obj->GetCellArray() : nullptr;
+        return ca ? ca->GetNumberOfCells() : 0;
+    };
+    return cellCount(input) == cellCount(m_Cache);
 }
 
 void ForceStaticMeshFilter::InputToCache(const DataObject::Pointer& input) {

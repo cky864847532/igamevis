@@ -1577,19 +1577,35 @@ void igQtMainWindow::initAllFilters() {
             return;
         }
 
-        ForceStaticMeshFilter::Pointer filter = ForceStaticMeshFilter::New();
-        filter->SetInput(obj);
-        if (filter->Execute()) {
-            auto out = filter->GetOutput();
-            if (out && out.get() != obj.get()) {
-                out->SetName(obj->GetName() + "_ForceStaticMesh");
-                modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm);
-            }
+        // 持久化过滤器实例：跨点击保留缓存，保证"几何不变时重复执行仅更新属性"真实生效。
+        static ForceStaticMeshFilter::Pointer s_filter;
+        static iGame::DataObject::Pointer s_cachedOutput;
+        if (!s_filter) { s_filter = ForceStaticMeshFilter::New(); }
+
+        s_filter->SetInput(obj);
+        if (!s_filter->Execute()) {
+            showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("当前对象不支持静态网格转换。"));
+            return;
+        }
+        auto out = s_filter->GetOutput();
+        if (out == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("静态网格输出为空。"));
+            return;
+        }
+
+        if (s_cachedOutput == nullptr || out.get() != s_cachedOutput.get()) {
+            // 首次执行，或缓存被重建（几何变化 / 换了模型）：作为新模型加入模型树
+            out->SetName(obj->GetName() + "_ForceStaticMesh");
+            modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm);
+            s_cachedOutput = out;
             rendererWidget->update();
             showDarkFramelessMessage(QStringLiteral("完成"),
-                                     QStringLiteral("已生成静态网格缓存（几何固定，仅属性更新）。"));
+                                     QStringLiteral("已生成静态网格缓存（几何固定）。再次执行将复用缓存，仅更新属性。"));
         } else {
-            showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("当前对象不支持静态网格转换。"));
+            // 缓存被复用：同一缓存对象，仅刷新其属性显示，不重复加模型
+            modelTreeWidget->updateAllAttriubute(out);
+            rendererWidget->update();
+            showDarkFramelessMessage(QStringLiteral("完成"), QStringLiteral("已复用静态缓存，仅更新属性数据。"));
         }
     });
 
