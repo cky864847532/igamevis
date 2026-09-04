@@ -14,7 +14,7 @@
 #include "DataProcessing/iGameMeshSimplificationFilter.h"
 #include "DataProcessing/iGameMeshSimplificationFilterPro.h"
 #include "DataProcessing/iGameMeshTriangulationFilter.h"
-#include "DataProcessing/iGameForceStaticMeshFilter.h"
+#include "ForceStaticMesh/iGameForceStaticMeshFilter.h"
 #include "DataProcessing/Simplification/iGameMeshSaliency.h"
 #include "DataProcessing/Simplification/iGameMeshSimplificationWithAttributes.h"
 
@@ -86,6 +86,8 @@
 #include <BuildAdjacencyRelation/iGameBuildAdjacencyRelationFilter.h>
 #include <meshoptimizer.h>
 #include <stdio.h>
+
+#include <map>
 
 #include <QDebug>
 #include <QMessageBox>
@@ -1577,32 +1579,38 @@ void igQtMainWindow::initAllFilters() {
             return;
         }
 
-        // 持久化过滤器实例：跨点击保留缓存，保证"几何不变时重复执行仅更新属性"真实生效。
-        static ForceStaticMeshFilter::Pointer s_filter;
-        static iGame::DataObject::Pointer s_cachedOutput;
-        if (!s_filter) { s_filter = ForceStaticMeshFilter::New(); }
+        // 按输入对象（DataObjectId）各自维护 Filter 实例与已登记的输出模型：
+        // 同一输入重复执行 → 复用缓存、仅更新属性；不同输入各自一份，避免
+        // 在多个模型间反复切换时不断重建缓存并无限新增模型。
+        static std::map<DataObjectId, ForceStaticMeshFilter::Pointer> s_fsmFilters;
+        static std::map<DataObjectId, iGame::DataObject::Pointer> s_fsmOutputs;
 
-        s_filter->SetInput(obj);
-        if (!s_filter->Execute()) {
+        const DataObjectId key = obj->GetDataObjectId();
+        auto& filter = s_fsmFilters[key];
+        if (!filter) { filter = ForceStaticMeshFilter::New(); }
+
+        filter->SetInput(obj);
+        if (!filter->Execute()) {
             showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("当前对象不支持静态网格转换。"));
             return;
         }
-        auto out = s_filter->GetOutput();
+        auto out = filter->GetOutput();
         if (out == nullptr) {
             showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("静态网格输出为空。"));
             return;
         }
 
-        if (s_cachedOutput == nullptr || out.get() != s_cachedOutput.get()) {
-            // 首次执行，或缓存被重建（几何变化 / 换了模型）：作为新模型加入模型树
+        auto& registered = s_fsmOutputs[key];
+        if (registered == nullptr || registered.get() != out.get()) {
+            // 该输入的首次执行，或缓存被重建（几何变化）：作为新模型加入模型树并登记
             out->SetName(obj->GetName() + "_ForceStaticMesh");
             modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm);
-            s_cachedOutput = out;
+            registered = out;
             rendererWidget->update();
             showDarkFramelessMessage(QStringLiteral("完成"),
                                      QStringLiteral("已生成静态网格缓存（几何固定）。再次执行将复用缓存，仅更新属性。"));
         } else {
-            // 缓存被复用：同一缓存对象，仅刷新其属性显示，不重复加模型
+            // 同一输入缓存被复用：仅刷新其属性显示，不重复加模型
             modelTreeWidget->updateAllAttriubute(out);
             rendererWidget->update();
             showDarkFramelessMessage(QStringLiteral("完成"), QStringLiteral("已复用静态缓存，仅更新属性数据。"));
