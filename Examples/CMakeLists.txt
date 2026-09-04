@@ -426,6 +426,7 @@ igame_add_example(testAppendReduce Filter/TestAppendReduce.cpp)
 
 # Periodic
 igame_add_example(testAngularPeriodic Filter/Periodic/TestAngularPeriodic.cpp)
+igame_add_example(testAngularPeriodicSelfCheck Filter/Periodic/TestAngularPeriodicSelfCheck.cpp)
 
 get_property(IGAME_EXAMPLE_TARGETS DIRECTORY PROPERTY IGAME_EXAMPLE_TARGETS)
 if (NOT IGAME_EXAMPLE_TARGETS)
