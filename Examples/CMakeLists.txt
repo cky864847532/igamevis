@@ -241,6 +241,8 @@ igame_add_example(testVariableCorrelationData Filter/VisualizationData/TestVaria
 igame_add_example(testVariableDensityData Filter/VisualizationData/TestVariableDensityData.cpp)
 igame_add_example(testPlotLineData Filter/VisualizationData/TestPlotLineData.cpp)
 
+# MaskPoints
+igame_add_example(testMaskPoints Filter/MaskPoints/TestMaskPoints.cpp)
 # RemoveGhostInformation
 igame_add_example(testRemoveGhostInformation Filter/RemoveGhostInformation/TestRemoveGhostInformation.cpp)
 

@@ -7,6 +7,7 @@
 #include "Convert/iGameConvertToPointCloudFilter.h"
 #include "Convert/iGameConvertToSurfaceMeshFilter.h"
 #include "Convert/iGameConvertToVolumeMeshFilter.h"
+#include "MaskPoints/iGameMaskPointsFilter.h"
 #include "Convert/iGameConvertToVertexFilter.h"
 
 #include "RemoveGhostInformation/iGameRemoveGhostInformationFilter.h"
@@ -53,6 +54,7 @@
 #include "FeatureExtraction/iGameLaplacianFilter.h"
 #include "FeatureExtraction/iGameOutlineCornerFilter.h"
 #include "FeatureExtraction/iGameVortexDetectionFilter.h"
+#include "FeatureExtraction/iGameVortexFilter.h"
 #include "FeatureExtraction/iGameVortexFilter.h"
 #include "ExtractSubset/iGameExtractSubsetFilter.h"
 #include "VolumeOfRevolution/iGameVolumeOfRevolutionFilter.h"

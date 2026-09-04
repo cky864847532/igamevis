@@ -17,6 +17,7 @@
 #include "DataProcessing/iGameMeshSimplificationFilter.h"
 #include "DataProcessing/iGameMeshSimplificationFilterPro.h"
 #include "DataProcessing/iGameMeshTriangulationFilter.h"
+#include "MaskPoints/iGameMaskPointsFilter.h"
 #include "DataProcessing/OverlappingCellsDetector/iGameOverlappingCellsDetectorFilter.h"
 #include "DataProcessing/Simplification/iGameMeshSaliency.h"
 #include "DataProcessing/Simplification/iGameMeshSimplificationWithAttributes.h"
@@ -2135,6 +2136,10 @@ void igQtMainWindow::initAllFilters() {
     });
     QMenu* mesh_processing = ui->menu_filters->addMenu(QStringLiteral("数据处理 (Data Processing)"));
 
+    connect(ui->menu_filters->addAction(QStringLiteral("点抽样（Mask Points）")), &QAction::triggered, this,
+            [&](bool checked) {
+                if (rendererWidget->GetScene() == nullptr || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+                    return;
     connect(ui->menu_filters->addAction(QStringLiteral("移除Ghost信息 (Remove Ghost Information)")),
             &QAction::triggered, this, [&](bool checked) {
                 if (rendererWidget->GetScene()->GetCurrentModel() == nullptr) return;
@@ -2354,11 +2359,190 @@ void igQtMainWindow::initAllFilters() {
                         modelTreeWidget->setCurrentItem(child);
                     }
                 }
-            }
-        } else {
-            showDarkFramelessMessage(QStringLiteral("Warning"), QStringLiteral("GhostCellFilter 执行失败"));
-        }
-    });
+
+                igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+                dialog->setFilterTitle(QStringLiteral("点抽样（Mask Points）"));
+
+                dialog->setFixedWidth(1050);
+
+                if (auto* scrollArea = dialog->findChild<QScrollArea*>(QStringLiteral("scrollArea"))) {
+                    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+                }
+
+                int onRatioId =
+                        dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("抽样间隔"), "2");
+
+                int maximumId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                     QStringLiteral("最大点数"), "5000");
+
+                int proportionalId = dialog->addParameter(
+                        igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                        QStringLiteral("按比例分配最大点数"), "false");
+
+                if (auto* widget = dialog->getWidget(proportionalId)) {
+                    widget->setToolTip(QStringLiteral(
+                            "该选项用于保持与 ParaView 参数兼容 "
+                            "当前串行实现中，该选项不会改变抽样结果"));
+                }
+
+                int offsetId =
+                        dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, QStringLiteral("偏移量"), "0");
+
+                int randomId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                                                    QStringLiteral("随机采样"), "false");
+
+                int randomModeId = dialog->addParameter(
+                        igQtFilterDialogDockWidget::QT_COMBO_BOX, QStringLiteral("随机采样模式"),
+                        std::vector<QString>{"随机化ID步长", "随机采样",
+                                             "空间分层随机采样",
+                                             "均匀空间分布（边界）",
+                                             "均匀空间分布（表面）",
+                                             "均匀空间分布（体积）"});
+
+                if (auto* comboBox = qobject_cast<QComboBox*>(dialog->getWidget(randomModeId))) {
+                    comboBox->setStyleSheet(QStringLiteral("QComboBox { padding-right: 24px; }"
+                                                           "QComboBox::drop-down {"
+                                                           "    subcontrol-origin: padding;"
+                                                           "    subcontrol-position: top right;"
+                                                           "    border-left: 1px solid #3C3C3C;"
+                                                           "    width: 20px;"
+                                                           "}"
+                                                           "QComboBox::down-arrow {"
+                                                           "    image: url(:/Ticon/Icons/spin_down_silver.svg);"
+                                                           "    width: 10px;"
+                                                           "    height: 10px;"
+                                                           "}"));
+                }
+
+                int randomSeedId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                        QStringLiteral("随机数种子"), "1");
+
+                int generateVerticesId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                                                              QStringLiteral("生成顶点"), "false");
+
+                int singleVertexId = dialog->addParameter(igQtFilterDialogDockWidget::QT_CHECK_BOX,
+                                                          QStringLiteral("每个单元一个顶点"), "false");
+
+                if (auto* widget = dialog->getWidget(singleVertexId)) {
+                    widget->setToolTip(QStringLiteral("启用后，每个抽样点生成一个顶点单元 "
+                                                      "当前 iGameVis 暂不支持 PolyVertex 输出"));
+                }
+
+                dialog->show();
+
+                dialog->setApplyFunctor([=, this]() {
+                    if (rendererWidget->GetScene() == nullptr ||
+                        rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+                        dialog->close();
+                        return;
+                    }
+
+                    bool ok = false;
+
+                    int onRatio = dialog->getInt(onRatioId, ok);
+
+                    if (!ok || onRatio <= 0) {
+                        showDarkFramelessMessage(QStringLiteral("警号"),
+                                                 QStringLiteral("抽样间隔必须大于 0"));
+                        return;
+                    }
+
+                    int maximum = dialog->getInt(maximumId, ok);
+
+                    if (!ok || maximum < 0) {
+                        showDarkFramelessMessage(
+                                QStringLiteral("警告"),
+                                QStringLiteral("最大点数必须大于或等于 0"));
+                        return;
+                    }
+
+                    bool proportionalMaximum = dialog->getChecked(proportionalId, ok);
+
+                    if (!ok) { return; }
+
+                    int offset = dialog->getInt(offsetId, ok);
+
+                    if (!ok || offset < 0) {
+                        showDarkFramelessMessage(QStringLiteral("警告"),
+                                                 QStringLiteral("偏移量必须大于或等于 0"));
+                        return;
+                    }
+
+                    bool randomSampling = dialog->getChecked(randomId, ok);
+
+                    if (!ok) { return; }
+
+                    int randomMode = dialog->getComboIndex(randomModeId, ok);
+
+                    if (!ok || randomMode < MaskPointsFilter::RANDOMIZED_ID_STRIDES ||
+                        randomMode > MaskPointsFilter::UNIFORM_SPATIAL_VOLUME) {
+                        showDarkFramelessMessage(QStringLiteral("警告"),
+                                                 QStringLiteral("随机采样模式无效"));
+                        return;
+                    }
+
+                    int randomSeed = dialog->getInt(randomSeedId, ok);
+
+                    if (!ok || randomSeed < 0) {
+                        showDarkFramelessMessage(QStringLiteral("警告"),
+                                                 QStringLiteral("随机种子必须大于或等于 0"));
+                        return;
+                    }
+
+                    bool generateVertices = dialog->getChecked(generateVerticesId, ok);
+
+                    if (!ok) { return; }
+
+                    bool singleVertexPerCell = dialog->getChecked(singleVertexId, ok);
+
+                    if (!ok) { return; }
+
+                    if (generateVertices && !singleVertexPerCell) {
+                        showDarkFramelessMessage(
+                                QStringLiteral("警告"),
+                                QStringLiteral(
+                                        "当前 iGameVis 暂不支持 PolyVertex 输出"
+                                        "启用“生成顶点”时，请同时启用“每个单元一个顶点”"));
+                        return;
+                    }
+
+                    auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+
+                    auto input = DynamicCast<UnstructuredMesh>(obj);
+
+                    if (input.IsNull()) {
+                        showDarkFramelessMessage(QStringLiteral("警告"),
+                                                 QStringLiteral("点抽样当前仅支持非结构网格"));
+                        return;
+                    }
+
+                    MaskPointsFilter::Pointer filter = MaskPointsFilter::New();
+
+                    filter->SetInput(0, input);
+                    filter->SetOnRatio(onRatio);
+                    filter->SetMaximumNumberOfPoints(static_cast<IGsize>(maximum));
+                    filter->SetProportionalMaximumNumberOfPoints(proportionalMaximum);
+                    filter->SetOffset(static_cast<IGsize>(offset));
+                    filter->SetRandomMode(randomSampling);
+                    filter->SetRandomModeType(randomMode);
+                    filter->SetRandomSeed(static_cast<unsigned int>(randomSeed));
+                    filter->SetGenerateVertices(generateVertices);
+                    filter->SetSingleVertexPerCell(singleVertexPerCell);
+
+                    if (!filter->Execute()) {
+                        showDarkFramelessMessage(QStringLiteral("警告"),
+                                                 QStringLiteral("点抽样执行失败"));
+                        return;
+                    }
+
+                    auto output = filter->GetOutput();
+                    output->SetName(obj->GetName() + "_mask_points");
+
+                    modelTreeWidget->addDataObjectToModelTree(output, Algorithm);
+                    rendererWidget->update();
+                    dialog->close();
+                });
+            });
 
     connect(mesh_processing->addAction(QStringLiteral("表面网格简化 (Surface Simplification)")), &QAction::triggered,
             this, [&](bool checked) {
