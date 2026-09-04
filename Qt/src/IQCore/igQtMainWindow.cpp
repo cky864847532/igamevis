@@ -5034,6 +5034,60 @@ QAction* volRevAction = ui->menu_filters->addAction(QStringLiteral("旋转体生
         });
     });
 
+    connect(ui->menu_filters->addAction(QStringLiteral("角度周期复制 (Angular Periodic)")), &QAction::triggered,
+            this, [this](bool) {
+        auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
+        if (scene == nullptr || scene->GetCurrentModel() == nullptr) {
+            showDarkFramelessMessage(QStringLiteral("角度周期复制"), QStringLiteral("请先选择一个模型。"));
+            return;
+        }
+        auto dataObject = scene->GetCurrentModel()->GetDataObject();
+        if (dataObject == nullptr || !iGame::DynamicCast<iGame::PointSet>(dataObject)) {
+            showDarkFramelessMessage(QStringLiteral("角度周期复制"), QStringLiteral("当前模型不是可旋转复制的网格。"));
+            return;
+        }
+
+        igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+        dialog->setFilterTitle(QStringLiteral("角度周期复制"));
+        int origin_x_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "origin_x", "0");
+        int origin_y_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "origin_y", "0");
+        int origin_z_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "origin_z", "0");
+        int axis_x_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "axis_x", "0");
+        int axis_y_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "axis_y", "0");
+        int axis_z_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "axis_z", "1");
+        int copies_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "copies", "2");
+        int angle_id = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT, "angle(deg)", "360");
+        dialog->show();
+
+        dialog->setApplyFunctor([=, this]() {
+            bool ok;
+            auto ox = static_cast<float>(dialog->getDouble(origin_x_id, ok));
+            auto oy = static_cast<float>(dialog->getDouble(origin_y_id, ok));
+            auto oz = static_cast<float>(dialog->getDouble(origin_z_id, ok));
+            double ax = dialog->getDouble(axis_x_id, ok);
+            double ay = dialog->getDouble(axis_y_id, ok);
+            double az = dialog->getDouble(axis_z_id, ok);
+            int copies = dialog->getInt(copies_id, ok);
+            float angle = static_cast<float>(dialog->getDouble(angle_id, ok));
+
+            auto filter = iGame::AngularPeriodicFilter::New();
+            filter->SetInput(0, dataObject);
+            filter->SetRotationAxis(iGame::Point(ox, oy, oz), iGame::Vector3d(ax, ay, az));
+            filter->SetNumberOfCopies(copies);
+            filter->SetAngle(angle);
+            if (!filter->Execute()) {
+                showDarkFramelessMessage(QStringLiteral("角度周期复制"),
+                                         QStringLiteral("执行失败：%1").arg(QString::fromStdString(filter->GetMessage())));
+                return;
+            }
+            auto output = filter->GetOutput(0);
+            if (output) {
+                output->SetName(dataObject->GetName() + "_Periodic");
+                modelTreeWidget->addDataObjectToModelTree(output, ItemSource::Algorithm);
+                rendererWidget->update();
+            }
+        });
+    });
 }
     
 
