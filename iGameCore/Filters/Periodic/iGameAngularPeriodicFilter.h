@@ -26,14 +26,8 @@ public:
     std::string GetMessage() const { return m_Message; }
 
 private:
-    // 供你实现的辅助函数（可直接改签名）
-
     // 把点 p 绕轴（m_AxisOrigin, m_AxisNormalized）旋转 angleRad 弧度
     Point RotatePoint(const Point& p, float angleRad);
-
-    // 复制一份原始网格到输出，每个顶点旋转 rotationAngleRad 弧度，
-    // 并根据原拓扑复制 Face/Cell（Point ID 偏移已正确处理）
-    void CopyRotated(UnstructuredMesh* out, PointSet* src, float rotationAngleRad);
 
 protected:
     AngularPeriodicFilter();
