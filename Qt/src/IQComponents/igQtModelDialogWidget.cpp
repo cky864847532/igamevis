@@ -308,6 +308,14 @@ igQtModelDialogWidget::igQtModelDialogWidget(QWidget* parent) : QObject(parent),
     propertyManager->setAttribute(prop_Transparency, "maximum", 1.0);
     propertyManager->setAttribute(prop_Transparency, "singleStep", 0.1);
 
+    // Force Static Mesh：与 ParaView 的 Properties 面板一致，勾选即“每次都重新计算几何缓存”。
+    // 该项默认不显示：只有当前模型是由 ForceStaticMesh 过滤器生成的缓存模型时才加入属性组
+    //（见 setStaticMeshCacheProperty）。
+    prop_ForceCacheComputation = propertyManager->addProperty(QVariant::Bool,
+                                                              QStringLiteral("Force Cache Computation"));
+    prop_ForceCacheComputation->setEnabled(false);
+    prop_ForceCacheComputation->setValue(false);
+
 
 
 
@@ -574,7 +582,30 @@ void igQtModelDialogWidget::onPropertyChanged(QtProperty* property, const QVaria
                 Update();
             }
         }
+    } else if (property == prop_ForceCacheComputation) {
+        // 交给主窗口处理：找到该模型对应的 ForceStaticMeshFilter 并切换其 ForceCacheComputation
+        if (m_UpdatingStaticMeshProperty) return; // 程序性刷新，不当作勾选
+        Q_EMIT StaticMeshCacheForceComputeChanged(value.toBool());
     }
+}
+
+void igQtModelDialogWidget::setStaticMeshCacheProperty(bool visible, bool value) {
+    if (prop_ForceCacheComputation == nullptr || objectGroup == nullptr) return;
+    // QtProperty 不是 QObject，无法 blockSignals：用标志位屏蔽“刷新显示”触发的 valueChanged
+    m_UpdatingStaticMeshProperty = true;
+    if (visible != m_StaticMeshPropertyShown) {
+        // 只有“由 ForceStaticMesh 过滤器生成的缓存模型”才把该项放进对象属性组，
+        // 其余模型完全看不到它（而不是显示为灰色）
+        if (visible) {
+            objectGroup->addSubProperty(prop_ForceCacheComputation);
+        } else {
+            objectGroup->removeSubProperty(prop_ForceCacheComputation);
+        }
+        m_StaticMeshPropertyShown = visible;
+    }
+    prop_ForceCacheComputation->setEnabled(visible);
+    prop_ForceCacheComputation->setValue(value);
+    m_UpdatingStaticMeshProperty = false;
 }
 
 iGame::Model* igQtModelDialogWidget::GetCurrentModel() {

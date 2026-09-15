@@ -1563,37 +1563,156 @@ void igQtMainWindow::initAllFilters() {
         rendererWidget->update();
     });
 
-    connect(mesh_processing->addAction(QStringLiteral("强制静态网格 (Force Static Mesh)")), &QAction::triggered, this, [this](bool) {
+    // ---- 强制静态网格 (Force Static Mesh)：几何固定 + 属性随时间步更新的缓存管理 ----
+    QMenu* forceStaticMeshMenu =
+            mesh_processing->addMenu(QStringLiteral("强制静态网格 (Force Static Mesh)"));
+
+    // 每个输入模型各自维护 Filter 实例、输出模型与场景中的模型 id：
+    // 同一输入重复执行 → 复用缓存、仅更新属性；不同输入各自一份，避免
+    // 在多个模型间反复切换时不断重建缓存并无限新增模型。
+    static std::map<DataObjectId, ForceStaticMeshFilter::Pointer> s_fsmFilters;
+    static std::map<DataObjectId, iGame::DataObject::Pointer> s_fsmOutputs;
+    static std::map<DataObjectId, unsigned int> s_fsmModelIds;
+    // 已登记的属性签名：属性集合没变时只刷新渲染数据，不重建模型树子项（避免逐帧抖动）
+    static std::map<DataObjectId, std::string> s_fsmAttrSignature;
+
+    QAction* fsmStatusAction = forceStaticMeshMenu->addAction(QStringLiteral("状态：无选中模型"));
+    fsmStatusAction->setEnabled(false);
+    QAction* fsmNoteAction = forceStaticMeshMenu->addAction(
+            QStringLiteral("说明：固定第一个时间步的网格几何，后续只更新属性；仅适用于各时间步网格完全相同的数据"));
+    fsmNoteAction->setEnabled(false);
+    forceStaticMeshMenu->addSeparator();
+
+    // 取当前选中的网格模型；不可用时提示并返回 nullptr
+    auto fsmResolveInput = [this]() -> iGame::DataObject::Pointer {
         if (rendererWidget->GetScene() == nullptr
             || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
             showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("请先加载并选择模型。"));
-            return;
+            return nullptr;
         }
         auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
         if (obj == nullptr) {
             showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
-            return;
+            return nullptr;
         }
-        if (iGame::DynamicCast<iGame::PointSet>(obj) == nullptr) {
-            showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("当前模型不支持静态网格（需要网格/点集）。"));
-            return;
+        // 单块网格直接用自身；时序数据（多文件帧）的输入是容器，网格挂在子对象上
+        if (iGame::DynamicCast<iGame::PointSet>(obj) == nullptr && !obj->HasSubDataObject()) {
+            showDarkFramelessMessage(QStringLiteral("错误"),
+                                     QStringLiteral("当前模型不支持静态网格（需要网格 / 点集）。"));
+            return nullptr;
         }
+        return obj;
+    };
 
-        // 按输入对象（DataObjectId）各自维护 Filter 实例与已登记的输出模型：
-        // 同一输入重复执行 → 复用缓存、仅更新属性；不同输入各自一份，避免
-        // 在多个模型间反复切换时不断重建缓存并无限新增模型。
-        static std::map<DataObjectId, ForceStaticMeshFilter::Pointer> s_fsmFilters;
-        static std::map<DataObjectId, iGame::DataObject::Pointer> s_fsmOutputs;
+    // 属性签名：用于判断属性集合是否发生变化
+    auto fsmAttrSignatureOf = [](iGame::DataObject::Pointer obj) -> std::string {
+        std::string signature;
+        if (!obj) return signature;
+        if (auto attrSet = obj->GetAttributeSet()) {
+            const int num = static_cast<int>(attrSet->GetNumberOfAttributes());
+            for (int i = 0; i < num; ++i) {
+                auto ptr = attrSet->GetAttribute(i).pointer;
+                if (!ptr) continue;
+                signature += ptr->GetName();
+                signature += '|';
+                signature += std::to_string(ptr->GetDimension());
+                signature += ';';
+            }
+        }
+        return signature;
+    };
+
+    // 刷新已登记缓存模型的显示：属性集合未变时只重转渲染数据
+    auto fsmRefreshOutput = [this, fsmAttrSignatureOf](const DataObjectId& key,
+                                                       iGame::DataObject::Pointer out) {
+        if (!out) return;
+        const std::string signature = fsmAttrSignatureOf(out);
+        const bool attributesChanged = (s_fsmAttrSignature[key] != signature);
+        s_fsmAttrSignature[key] = signature;
+
+        if (attributesChanged) {
+            modelTreeWidget->updateAllAttriubute(out);
+        } else if (auto drawObj = iGame::DynamicCast<iGame::DrawObject>(out)) {
+            drawObj->ForceReConvertToDrawableData();
+        }
+        rendererWidget->update();
+    };
+
+    // 属性面板中的 “Force Cache Computation”：只有选中「由 ForceStaticMesh 生成的缓存模型」时才出现
+    //（选中输入端模型时不显示，与 ParaView 中选中过滤器输出节点才看到其属性一致）
+    auto fsmRefreshPropertyPanel = [this]() {
+        iGame::DataObject::Pointer obj;
+        if (auto scene = rendererWidget->GetScene()) {
+            if (scene->GetCurrentModel()) { obj = scene->GetCurrentModel()->GetDataObject(); }
+        }
+        iGame::DataObject::Pointer input, output;
+        ForceStaticMeshFilter::Pointer filter;
+        const bool isCacheModel = obj
+                && ui->widget_Animation->getStaticMeshCacheByModel(obj, input, output, filter)
+                && filter != nullptr
+                && output.GetPointer() == obj.GetPointer();
+        modelTreeWidget->setStaticMeshCacheProperty(
+                isCacheModel, isCacheModel ? filter->GetForceCacheComputation() : false);
+    };
+
+    // 解析「当前选中模型」对应的静态网格上下文：
+    //  - 选中缓存模型 xxx_ForceStaticMesh → 落到它对应的输入模型与过滤器上（避免把缓存当成输入、套娃再缓存）
+    //  - 选中输入模型 → 就是该模型自身（已注册的返回其过滤器，未注册的返回 nullptr）
+    auto fsmResolveContext = [this](iGame::DataObject::Pointer& input,
+                                    iGame::DataObject::Pointer& output,
+                                    ForceStaticMeshFilter::Pointer& filter) -> bool {
+        input = nullptr;
+        output = nullptr;
+        filter = nullptr;
+        iGame::DataObject::Pointer obj;
+        if (auto scene = rendererWidget->GetScene()) {
+            if (scene->GetCurrentModel()) { obj = scene->GetCurrentModel()->GetDataObject(); }
+        }
+        if (!obj) return false;
+        if (ui->widget_Animation->getStaticMeshCacheByModel(obj, input, output, filter) && filter) {
+            return true;
+        }
+        input = obj;
+        auto it = s_fsmFilters.find(obj->GetDataObjectId());
+        if (it != s_fsmFilters.end()) { filter = it->second; }
+        return true;
+    };
+
+    // 执行（rebuildGeometry = true 时强制重建几何缓存）
+    auto fsmApply = [this, fsmResolveInput, fsmResolveContext, fsmAttrSignatureOf, fsmRefreshOutput,
+                     fsmRefreshPropertyPanel](
+                            bool rebuildGeometry, iGame::DataObject::Pointer explicitInput = nullptr) {
+        auto obj = explicitInput;
+        if (!obj) {
+            // 选中缓存模型时自动落到它的输入上（再次执行 = 更新该缓存，而不是给缓存再套一层缓存）
+            iGame::DataObject::Pointer resolvedInput, resolvedOutput;
+            ForceStaticMeshFilter::Pointer resolvedFilter;
+            if (fsmResolveContext(resolvedInput, resolvedOutput, resolvedFilter) && resolvedInput) {
+                obj = resolvedInput;
+            } else {
+                obj = fsmResolveInput(); // 走原有提示（无模型 / 不支持的数据）
+            }
+        }
+        if (!obj) return;
 
         const DataObjectId key = obj->GetDataObjectId();
         auto& filter = s_fsmFilters[key];
         if (!filter) { filter = ForceStaticMeshFilter::New(); }
+        if (!filter->GetStaticCacheEnabled()) { filter->SetStaticCacheEnabled(true); }
 
+        // 属性面板里的 Force Cache Computation 是持久开关（与 ParaView 一致）：
+        // 它为 true 时每次执行都会重建几何缓存；这里仅在“一次性重建”时临时置位。
+        const bool persistentForce = filter->GetForceCacheComputation();
         filter->SetInput(obj);
-        if (!filter->Execute()) {
-            showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("当前对象不支持静态网格转换。"));
+        filter->SetForceCacheComputation(rebuildGeometry || persistentForce);
+        const bool ok = filter->Execute();
+        filter->SetForceCacheComputation(persistentForce);
+        if (!ok) {
+            showDarkFramelessMessage(QStringLiteral("执行出错"),
+                                     QString::fromStdString(filter->GetStatusMessage()));
             return;
         }
+
         auto out = filter->GetOutput();
         if (out == nullptr) {
             showDarkFramelessMessage(QStringLiteral("执行出错"), QStringLiteral("静态网格输出为空。"));
@@ -1601,21 +1720,157 @@ void igQtMainWindow::initAllFilters() {
         }
 
         auto& registered = s_fsmOutputs[key];
-        if (registered == nullptr || registered.get() != out.get()) {
-            // 该输入的首次执行，或缓存被重建（几何变化）：作为新模型加入模型树并登记
+        if (registered == nullptr) {
+            // 该输入的首次执行：作为新模型加入模型树并登记
             out->SetName(obj->GetName() + "_ForceStaticMesh");
-            modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm);
+            s_fsmModelIds[key] = static_cast<unsigned int>(
+                    modelTreeWidget->addDataObjectToModelTree(out, ItemSource::Algorithm));
+            s_fsmAttrSignature[key] = fsmAttrSignatureOf(out);
             registered = out;
             rendererWidget->update();
-            showDarkFramelessMessage(QStringLiteral("完成"),
-                                     QStringLiteral("已生成静态网格缓存（几何固定）。再次执行将复用缓存，仅更新属性。"));
+        } else if (registered.get() != out.get()) {
+            // 缓存对象被替换（例如几何类型改变）：换掉已有模型的数据对象，不新增模型
+            auto scene = iGame::SceneManager::Instance()->GetCurrentScene();
+            auto modelIdIt = s_fsmModelIds.find(key);
+            if (scene && modelIdIt != s_fsmModelIds.end()) {
+                if (auto model = scene->GetModelById(modelIdIt->second)) {
+                    model->SetDataObject(out);
+                    model->Update();
+                }
+            }
+            registered = out;
+            fsmRefreshOutput(key, out);
         } else {
-            // 同一输入缓存被复用：仅刷新其属性显示，不重复加模型
-            modelTreeWidget->updateAllAttriubute(out);
-            rendererWidget->update();
-            showDarkFramelessMessage(QStringLiteral("完成"), QStringLiteral("已复用静态缓存，仅更新属性数据。"));
+            // 复用同一缓存对象：仅刷新属性显示与渲染数据
+            fsmRefreshOutput(key, out);
         }
-    });
+
+        // 注册到动画控件：拖动时间轴 / 播放时自动把当前帧属性同步到缓存
+        ui->widget_Animation->registerStaticMeshCache(obj, out, filter);
+        // 属性面板里的 Force Cache Computation 此时应变为可用
+        fsmRefreshPropertyPanel();
+
+        showDarkFramelessMessage(
+                QStringLiteral("静态网格缓存"),
+                QString::fromStdString(filter->GetStatusMessage())
+                        + QStringLiteral("（固定第一个时间步的网格几何，后续只更新属性；"
+                                         "仅适用于各时间步网格完全相同的数据）"));
+    };
+
+    // 属性面板中的 “Force Cache Computation”（仿 ParaView 的 Properties 面板）：
+    // 勾选 = 每次都重新计算几何缓存；当前模型既不是缓存输出也不是缓存输入时置灰。
+    connect(modelTreeWidget, &igQtModelDialogWidget::CurrendModelChanged, this,
+            [fsmRefreshPropertyPanel]() { fsmRefreshPropertyPanel(); });
+
+    connect(modelTreeWidget, &igQtModelDialogWidget::StaticMeshCacheForceComputeChanged, this,
+            [this, fsmApply, fsmRefreshPropertyPanel](bool value) {
+                iGame::DataObject::Pointer obj, input, output;
+                ForceStaticMeshFilter::Pointer filter;
+                if (auto scene = rendererWidget->GetScene()) {
+                    if (scene->GetCurrentModel()) { obj = scene->GetCurrentModel()->GetDataObject(); }
+                }
+                if (!obj || !ui->widget_Animation->getStaticMeshCacheByModel(obj, input, output, filter)
+                    || !filter) {
+                    fsmRefreshPropertyPanel();
+                    return;
+                }
+                filter->SetForceCacheComputation(value);
+                if (value) {
+                    // 等价于 ParaView 勾选后 Apply：立即按当前状态重建一次几何缓存
+                    fsmApply(true, input);
+                    showDarkFramelessMessage(
+                            QStringLiteral("Force Cache Computation"),
+                            QStringLiteral("已开启：之后每次时间步更新都会重新建立几何缓存"
+                                           "（几何跟随当前帧）。取消勾选可恢复复用缓存。"));
+                } else {
+                    showDarkFramelessMessage(
+                            QStringLiteral("Force Cache Computation"),
+                            QStringLiteral("已关闭：恢复复用几何缓存，几何固定在缓存建立时的那一帧。"));
+                }
+                fsmRefreshPropertyPanel();
+            });
+
+    connect(forceStaticMeshMenu->addAction(QStringLiteral("应用 / 更新静态网格缓存")),
+            &QAction::triggered, this, [fsmApply](bool) { fsmApply(false); });
+
+    connect(forceStaticMeshMenu->addAction(QStringLiteral("重新建立几何缓存")),
+            &QAction::triggered, this, [fsmApply](bool) { fsmApply(true); });
+
+    QAction* fsmToggleAction =
+            forceStaticMeshMenu->addAction(QStringLiteral("关闭静态缓存（输出跟随输入几何）"));
+    connect(fsmToggleAction, &QAction::triggered, this,
+            [this, fsmApply, fsmResolveContext](bool) {
+                iGame::DataObject::Pointer obj, output;
+                ForceStaticMeshFilter::Pointer filter;
+                if (!fsmResolveContext(obj, output, filter) || !obj) {
+                    showDarkFramelessMessage(QStringLiteral("无可用模型"),
+                                             QStringLiteral("请先加载并选择模型。"));
+                    return;
+                }
+                if (!filter) {
+                    showDarkFramelessMessage(
+                            QStringLiteral("静态网格缓存"),
+                            QStringLiteral("当前模型尚未建立静态缓存，请先执行「应用 / 更新静态网格缓存」。"));
+                    return;
+                }
+                const bool enable = !filter->GetStaticCacheEnabled();
+                filter->SetStaticCacheEnabled(enable);
+
+                if (enable) {
+                    // 重新开启：重新建立几何缓存（关闭期间输入几何可能已经变化）
+                    fsmApply(true, obj);
+                    return;
+                }
+
+                // 关闭：移除缓存模型，直接查看输入网格（几何随时间步真实变化）
+                const DataObjectId key = obj->GetDataObjectId();
+                ui->widget_Animation->unregisterStaticMeshCache(obj);
+                if (auto out = s_fsmOutputs[key]) {
+                    if (auto item = modelTreeWidget->getItemFromObject(out)) {
+                        modelTreeWidget->setCurrentItem(item);
+                        modelTreeWidget->deleteCurrentModel();
+                    }
+                }
+                s_fsmOutputs.erase(key);
+                s_fsmModelIds.erase(key);
+                s_fsmAttrSignature.erase(key);
+                rendererWidget->update();
+                showDarkFramelessMessage(
+                        QStringLiteral("静态网格缓存"),
+                        QStringLiteral("已关闭静态缓存：输出已跟随输入网格（几何随时间步变化）。"
+                                       "再次开启会重新建立几何缓存。"));
+            });
+
+    // 菜单展开时刷新状态显示：缓存几何来自哪个时间步、多少点 / 单元
+    connect(forceStaticMeshMenu, &QMenu::aboutToShow, this,
+            [this, fsmStatusAction, fsmToggleAction]() {
+                auto scene = rendererWidget->GetScene();
+                iGame::DataObject::Pointer obj;
+                if (scene && scene->GetCurrentModel()) {
+                    obj = scene->GetCurrentModel()->GetDataObject();
+                }
+                if (!obj) {
+                    fsmStatusAction->setText(QStringLiteral("状态：无选中模型"));
+                    fsmToggleAction->setEnabled(false);
+                    return;
+                }
+                auto it = s_fsmFilters.find(obj->GetDataObjectId());
+                if (it == s_fsmFilters.end() || !it->second) {
+                    fsmStatusAction->setText(QStringLiteral("状态：尚未建立静态缓存"));
+                    fsmToggleAction->setEnabled(false);
+                    return;
+                }
+                auto filter = it->second;
+                fsmToggleAction->setEnabled(true);
+                fsmToggleAction->setText(filter->GetStaticCacheEnabled()
+                                                 ? QStringLiteral("关闭静态缓存（输出跟随输入几何）")
+                                                 : QStringLiteral("开启静态缓存（重新建立几何缓存）"));
+                fsmStatusAction->setText(
+                        QStringLiteral("状态：")
+                        + QString::fromStdString(filter->GetCacheDescription())
+                        + (filter->GetStaticCacheEnabled() ? QString()
+                                                           : QStringLiteral("（缓存已关闭）")));
+            });
 
     //connect(mesh_processing->addAction("Test"), &QAction::triggered, this, [&](bool checked) {
     //    auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
@@ -2897,6 +3152,20 @@ void igQtMainWindow::initAllMySignalConnections() {
     /* Animation signal connect BEGIN.*/
     connect(ui->widget_Animation, &igQtAnimationWidget::UpdateScene,
             this, &igQtMainWindow::UpdateRenderingWidget);
+
+    // 静态网格缓存随新的时间步自动更新（属性已同步）：刷新渲染数据，
+    // 属性集合变化时才重建模型树子项，避免逐帧重建造成抖动。
+    connect(ui->widget_Animation, &igQtAnimationWidget::StaticMeshCacheUpdated, this,
+            [this](iGame::DataObject::Pointer output, bool attributesChanged, QString message) {
+                Q_UNUSED(message);
+                if (!output) return;
+                if (attributesChanged) {
+                    modelTreeWidget->updateAllAttriubute(output);
+                } else if (auto drawObj = iGame::DynamicCast<iGame::DrawObject>(output)) {
+                    drawObj->ForceReConvertToDrawableData();
+                }
+                rendererWidget->update();
+            });
     // Update scalar view UI when animation frame changes (updates DataRange slider and info label)
     connect(ui->widget_Animation, &igQtAnimationWidget::AnimationFrameChanged,
             ui->widget_ScalarField, &igQtScalarViewWidget::showScalarView);

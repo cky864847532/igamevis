@@ -44,6 +44,9 @@ public slots:
     void deleteCurrentModel();
     void onPropertyChanged(QtProperty* property, const QVariant& value);
     iGame::Model* GetCurrentModel();
+    // Force Static Mesh：属性面板中的 “Force Cache Computation” 勾选项（仿 ParaView 的 Properties 面板）。
+    // visible=false 时该项置灰不可用（当前模型不是静态网格缓存/输入）。
+    void setStaticMeshCacheProperty(bool visible, bool value);
     void setCurrentItem(QTreeWidgetItem* item) {
         if (modelTreeWidget) modelTreeWidget->setCurrentItem(item);
     }
@@ -53,6 +56,8 @@ signals:
     void CloudPictureChanged();
     void ModelDeleted(const std::string& modelName);  // Emitted when model is deleted
     void Update();
+    // 用户在属性面板中切换了 “Force Cache Computation”
+    void StaticMeshCacheForceComputeChanged(bool value);
 
 private:
     //iGame::Model* currentModel;
@@ -68,6 +73,11 @@ private:
     QtVariantProperty* prop_PointSize;
     QtVariantProperty* pror_LineWidth;
     QtVariantProperty* prop_Transparency;
+    QtVariantProperty* prop_ForceCacheComputation = nullptr; // Force Static Mesh：强制重建缓存
+    // 程序性地刷新上面的属性时置位，避免被当成用户勾选
+    bool m_UpdatingStaticMeshProperty{false};
+    // 该项当前是否显示在对象属性组中（只有 ForceStaticMesh 生成的缓存模型才显示）
+    bool m_StaticMeshPropertyShown{false};
 
     Ui::LayerDialog* ui;
     QDockWidget* m_treeDock = nullptr;       // 上半

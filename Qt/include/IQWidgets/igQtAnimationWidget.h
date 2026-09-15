@@ -7,6 +7,9 @@
 #include <ui_Animation.h>
 #include <IQCore/igQtExportModule.h>
 #include <iGameDataObject.h>
+#include <ForceStaticMesh/iGameForceStaticMeshFilter.h>
+#include <string>
+#include <vector>
 class igQtAnimationVcrController;
 class IG_QT_MODULE_EXPORT igQtAnimationWidget : public QWidget{
 
@@ -38,6 +41,22 @@ public:
     int ensureVortexForCurrentFrame(iGame::DataObject::Pointer obj, const std::string& sourceAttrName,
                                     int frameIndexForDisplay = -1);
 
+    // ---- 静态网格缓存（Force Static Mesh）的时间步联动 ----
+    // 注册一个「静态网格缓存跟随项」：时间步变化（拖动时间轴 / 播放）后，
+    // 自动把输入当前帧的属性同步到缓存输出上，几何保持缓存建立时的那一帧。
+    void registerStaticMeshCache(iGame::DataObject::Pointer input,
+                                 iGame::DataObject::Pointer output,
+                                 iGame::ForceStaticMeshFilter::Pointer filter);
+    void unregisterStaticMeshCache(iGame::DataObject::Pointer input);
+    bool hasStaticMeshCache(iGame::DataObject::Pointer input) const;
+    iGame::ForceStaticMeshFilter::Pointer getStaticMeshFilter(iGame::DataObject::Pointer input) const;
+    // 按模型查静态网格缓存：obj 可以是输入端模型，也可以是缓存输出模型。
+    // 找到时返回 true 并给出输入、输出与过滤器实例（供属性面板等使用）。
+    bool getStaticMeshCacheByModel(iGame::DataObject::Pointer obj,
+                                   iGame::DataObject::Pointer& input,
+                                   iGame::DataObject::Pointer& output,
+                                   iGame::ForceStaticMeshFilter::Pointer& filter) const;
+
 public slots:
     void initAnimationComponents();
 
@@ -57,10 +76,36 @@ signals:
     void UpdateScene();
     void AnimationFrameChanged();  // Signal when animation frame changes, triggers scalar UI update
 
+    // 静态网格缓存已随新的时间步更新（主窗口据此刷新模型树属性与场景渲染）
+    // attributesChanged 为 true 时属性集合发生变化，需要重建模型树子项
+    void StaticMeshCacheUpdated(iGame::DataObject::Pointer output, bool attributesChanged,
+                                QString message);
+
     void PlayAnimation_snap(int keyframe_idx);
 
     void PlayAnimation_interpolate(int keyframe_0, float t);
 
+
+private:
+    // 静态网格缓存跟随项：输入模型 → 缓存输出 + 对应的过滤器实例
+    struct StaticMeshCacheBinding {
+        iGame::DataObject::Pointer Input;
+        iGame::DataObject::Pointer Output;
+        iGame::ForceStaticMeshFilter::Pointer Filter;
+        std::string AttributeSignature; // 上次同步时的属性签名（判断是否需要重建模型树子项）
+    };
+
+    // 遍历已注册的静态网格缓存跟随项，把输入当前帧的属性同步到缓存输出
+    void syncStaticMeshCaches(int frameIdx, float timeValue);
+    // 刷新缓存输出的渲染数据（属性变化后必须重建，否则云图仍是旧值）
+    static void refreshStaticMeshOutput(iGame::DataObject::Pointer output);
+
+    // 若 obj 是某个缓存的输出，返回对应绑定（否则 nullptr）。
+    StaticMeshCacheBinding* findStaticMeshBindingByOutput(iGame::DataObject* obj);
+    // 取得用于驱动某个模型的帧列表：缓存输出节点用其输入的时间帧
+    iGame::StreamingData::Pointer timeFramesForModel(iGame::DataObject::Pointer obj);
+    // 缓存输出节点的「时间步更新」：推进输入 → filter 重新执行（几何固定、属性更新）
+    bool updateStaticMeshOutputAtTimeStep(iGame::DataObject::Pointer output, int frameIdx);
 
 private:
     Ui::Animation* ui;
@@ -72,4 +117,6 @@ private:
     // 上次绑定按需计算的模型；用于「切换模型时自动关闭」，
     // 而在同一模型上选属性（同样会触发 initAnimationComponents）时保持开启
     iGame::DataObject* m_VortexBoundModel{nullptr};
+
+    std::vector<StaticMeshCacheBinding> m_StaticMeshCaches;
 };

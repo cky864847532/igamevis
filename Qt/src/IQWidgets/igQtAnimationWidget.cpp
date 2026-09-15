@@ -16,6 +16,7 @@
 #include <Deformation/iGameStressDeformationFilter.h>
 #include <FeatureExtraction/iGameVortexFilter.h>
 #include <iGameProgressObserver.h>
+#include <algorithm>
 #include <iostream>
 
 /**
@@ -175,8 +176,19 @@ void igQtAnimationWidget::playAnimation_snap(unsigned int keyframe_idx) {
     }
     auto currentDrawObject = DynamicCast<DrawObject>(
             currentScene->GetCurrentModel()->GetDataObject());
-    if (currentDrawObject == nullptr ||
-        currentDrawObject->GetTimeFrames()->GetArrays().empty()) {
+    if (currentDrawObject == nullptr) {
+        m_IsAnimationPlaying = false;
+        return;
+    }
+    // 帧列表：当前模型若是静态网格缓存输出，则用其输入端的时间帧驱动
+    auto frameSource = timeFramesForModel(currentDrawObject);
+    if (frameSource == nullptr || keyframe_idx >= frameSource->GetTimeNum()) {
+        m_IsAnimationPlaying = false;
+        return;
+    }
+    const bool staticMeshOutput =
+            (findStaticMeshBindingByOutput(currentDrawObject.GetPointer()) != nullptr);
+    if (!staticMeshOutput && frameSource->GetArrays().empty()) {
         m_IsAnimationPlaying = false;
         return;
     }
@@ -186,7 +198,7 @@ void igQtAnimationWidget::playAnimation_snap(unsigned int keyframe_idx) {
     ui->comboBoxCurrentAnimation->blockSignals(false);
 
 
-    if (m_VortexAutoCompute && !m_VortexSourceAttr.empty()) {
+    if (m_VortexAutoCompute && !m_VortexSourceAttr.empty() && !staticMeshOutput) {
         if (auto frames = currentDrawObject->PeekTimeFrames()) {
             auto frameData = frames->GetTargetTimeFrameData(keyframe_idx);
             for (auto& o: frameData) {
@@ -205,8 +217,14 @@ void igQtAnimationWidget::playAnimation_snap(unsigned int keyframe_idx) {
         }
     }
 
-    // 缓存设置由 comboBox_AnimationCacheNum 控制，不在播放时覆盖
-    currentDrawObject->UpdateAnimation(keyframe_idx);
+    if (staticMeshOutput) {
+        // 缓存输出节点：由输入 + filter 驱动（几何固定、属性更新），不能对它调用 UpdateAnimation，
+        // 否则时序帧数据会整体替换掉缓存的几何。
+        updateStaticMeshOutputAtTimeStep(currentDrawObject, static_cast<int>(keyframe_idx));
+    } else {
+        // 缓存设置由 comboBox_AnimationCacheNum 控制，不在播放时覆盖
+        currentDrawObject->UpdateAnimation(keyframe_idx);
+    }
 
     currentScene->MakeCurrent();
 
@@ -287,6 +305,17 @@ void igQtAnimationWidget::playAnimation_snap(unsigned int keyframe_idx) {
         if(!deformFilter->Execute()) std::cout << " deformation error \n";
     }
 
+    // 静态网格缓存联动：时间步变化后自动把当前帧的属性同步到缓存输出，
+    // 几何保持缓存建立时的那一帧（Force Static Mesh 语义）。
+    {
+        float frameTimeValue = 0.f;
+        if (auto frames = currentDrawObject->PeekTimeFrames()) {
+            if (static_cast<size_t>(keyframe_idx) < frames->GetTimeNum()) {
+                frameTimeValue = frames->GetTargetTimeValue(keyframe_idx);
+            }
+        }
+        syncStaticMeshCaches(static_cast<int>(keyframe_idx), frameTimeValue);
+    }
 
     currentScene->DoneCurrent();
 
@@ -309,9 +338,21 @@ void igQtAnimationWidget::playAnimation_interpolate(int keyframe_0, float t) {
     auto currentScene = SceneManager::Instance()->GetCurrentScene();
     auto currentDrawObject = DynamicCast<DrawObject>(
             currentScene->GetCurrentModel()->GetDataObject());
-    if (currentDrawObject == nullptr
+    if (currentDrawObject == nullptr) {
+        m_IsAnimationPlaying = false;
+        return;
+    }
+    // 缓存输出节点自身没有时间帧，插值模式下退化为按插值起点帧更新
+    //（几何固定、属性更新），与 snap 模式保持一致
+    if (findStaticMeshBindingByOutput(currentDrawObject.GetPointer()) != nullptr) {
+        updateStaticMeshOutputAtTimeStep(currentDrawObject, keyframe_0);
+        Q_EMIT UpdateScene();
+        m_IsAnimationPlaying = false;
+        return;
+    }
+    if (currentDrawObject->GetTimeFrames() == nullptr
         ||  currentDrawObject->GetTimeFrames()->GetArrays().empty()
-        ||  keyframe_0 + 1 == currentDrawObject->GetTimeFrames()->GetArrays().size()) {
+        ||  keyframe_0 + 1 == static_cast<int>(currentDrawObject->GetTimeFrames()->GetArrays().size())) {
         m_IsAnimationPlaying = false;
         return;
     }
@@ -341,6 +382,10 @@ void igQtAnimationWidget::playAnimation_interpolate(int keyframe_0, float t) {
         }
         currentDrawObject->UpdateSubDataObjectDataRange();
     }
+    // 插值过程里会对子对象调用 ConvertToDrawableData()（重建 GPU 数据），
+    // 因此必须先取得 GL 上下文，否则在无上下文时更新渲染数据会崩溃。
+    currentScene->MakeCurrent();
+
     auto frameSubFiles_1 = currentDrawObject->GetTimeFrames()
             ->GetTargetTimeFrame(keyframe_0 + 1)
             .GetMetaData();
@@ -409,13 +454,18 @@ void igQtAnimationWidget::playAnimation_interpolate(int keyframe_0, float t) {
 //    if(!deformFilter->Execute()) std::cout << " error \n";
 
 
-    currentScene->MakeCurrent();
     currentDrawObject->SetViewStyle(currentDrawObject->GetViewStyle());
 
     if (currentDrawObject->GetAttributeIndex() != -1) {
         currentDrawObject->ViewCloudPicture(
                 currentScene, currentDrawObject->GetAttributeIndex());
     }
+
+    // 静态网格缓存联动（插值模式）：输入的当前状态已经是插值结果，
+    // 让缓存按「仅更新属性」的方式跟随，几何保持缓存建立时的那一帧。
+    // 必须放在 DoneCurrent() 之前：缓存输出的渲染数据重转需要 GL 上下文。
+    syncStaticMeshCaches(keyframe_0, t);
+
     currentScene->DoneCurrent();
 
     // Update comboBoxCurrentAnimation for interpolation (block signals to avoid recursion)
@@ -608,6 +658,191 @@ void igQtAnimationWidget::setPreferredCacheNum(int n) {
     frames->EnableCache(m_PreferredCacheNum + 1);
 }
 
+namespace {
+// 属性签名：用于判断缓存输出的属性集合是否发生变化（变了才重建模型树子项）
+std::string StaticMeshAttributeSignature(iGame::DataObject::Pointer obj) {
+    std::string signature;
+    if (!obj) return signature;
+    auto attrSet = obj->GetAttributeSet();
+    if (!attrSet) return signature;
+    const int num = static_cast<int>(attrSet->GetNumberOfAttributes());
+    for (int i = 0; i < num; ++i) {
+        auto ptr = attrSet->GetAttribute(i).pointer;
+        if (!ptr) continue;
+        signature += ptr->GetName();
+        signature += '|';
+        signature += std::to_string(ptr->GetDimension());
+        signature += ';';
+    }
+    return signature;
+}
+} // namespace
+
+void igQtAnimationWidget::registerStaticMeshCache(iGame::DataObject::Pointer input,
+                                                  iGame::DataObject::Pointer output,
+                                                  iGame::ForceStaticMeshFilter::Pointer filter) {
+    if (!input || !filter) return;
+    for (auto& binding: m_StaticMeshCaches) {
+        if (binding.Input.get() == input.get()) {
+            binding.Output = output;
+            binding.Filter = filter;
+            binding.AttributeSignature = StaticMeshAttributeSignature(output);
+            return;
+        }
+    }
+    StaticMeshCacheBinding binding;
+    binding.Input = input;
+    binding.Output = output;
+    binding.Filter = filter;
+    binding.AttributeSignature = StaticMeshAttributeSignature(output);
+    m_StaticMeshCaches.push_back(binding);
+}
+
+void igQtAnimationWidget::unregisterStaticMeshCache(iGame::DataObject::Pointer input) {
+    if (!input) return;
+    m_StaticMeshCaches.erase(
+            std::remove_if(m_StaticMeshCaches.begin(), m_StaticMeshCaches.end(),
+                           [&input](const StaticMeshCacheBinding& binding) {
+                               return binding.Input.get() == input.get();
+                           }),
+            m_StaticMeshCaches.end());
+}
+
+bool igQtAnimationWidget::hasStaticMeshCache(iGame::DataObject::Pointer input) const {
+    if (!input) return false;
+    for (const auto& binding: m_StaticMeshCaches) {
+        if (binding.Input.get() == input.get()) return true;
+    }
+    return false;
+}
+
+iGame::ForceStaticMeshFilter::Pointer
+igQtAnimationWidget::getStaticMeshFilter(iGame::DataObject::Pointer input) const {
+    if (!input) return nullptr;
+    for (const auto& binding: m_StaticMeshCaches) {
+        if (binding.Input.get() == input.get()) return binding.Filter;
+    }
+    return nullptr;
+}
+
+bool igQtAnimationWidget::getStaticMeshCacheByModel(iGame::DataObject::Pointer obj,
+                                                    iGame::DataObject::Pointer& input,
+                                                    iGame::DataObject::Pointer& output,
+                                                    iGame::ForceStaticMeshFilter::Pointer& filter) const {
+    if (!obj) return false;
+    for (const auto& binding: m_StaticMeshCaches) {
+        if (binding.Input.get() == obj.get() || binding.Output.get() == obj.get()) {
+            input = binding.Input;
+            output = binding.Output;
+            filter = binding.Filter;
+            return filter != nullptr;
+        }
+    }
+    return false;
+}
+
+void igQtAnimationWidget::refreshStaticMeshOutput(iGame::DataObject::Pointer output) {
+    if (!output) return;
+    auto drawObj = iGame::DynamicCast<iGame::DrawObject>(output);
+    if (!drawObj) return;
+    // 属性换了以后必须重转渲染数据（含抽壳网格），否则渲染仍是上一帧的值
+    drawObj->ForceReConvertToDrawableData();
+    drawObj->ConvertToDrawableData();
+}
+
+igQtAnimationWidget::StaticMeshCacheBinding*
+igQtAnimationWidget::findStaticMeshBindingByOutput(iGame::DataObject* obj) {
+    if (obj == nullptr) return nullptr;
+    for (auto& binding: m_StaticMeshCaches) {
+        if (binding.Output.GetPointer() == obj) { return &binding; }
+    }
+    return nullptr;
+}
+
+iGame::StreamingData::Pointer
+igQtAnimationWidget::timeFramesForModel(iGame::DataObject::Pointer obj) {
+    if (!obj) return nullptr;
+    // 缓存输出节点自身没有时间帧：用输入模型的帧列表驱动它（与 ParaView 的管线输出一致）
+    if (auto* binding = findStaticMeshBindingByOutput(obj.GetPointer())) {
+        if (binding->Input) { return binding->Input->PeekTimeFrames(); }
+        return nullptr;
+    }
+    return obj->PeekTimeFrames();
+}
+
+bool igQtAnimationWidget::updateStaticMeshOutputAtTimeStep(iGame::DataObject::Pointer output,
+                                                           int frameIdx) {
+    using namespace iGame;
+    auto* binding = findStaticMeshBindingByOutput(output.GetPointer());
+    if (binding == nullptr || !binding->Filter || !binding->Input) return false;
+    if (!binding->Filter->GetStaticCacheEnabled()) return false;
+
+    auto frames = binding->Input->PeekTimeFrames();
+    if (!frames || frameIdx < 0 || static_cast<size_t>(frameIdx) >= frames->GetTimeNum()) return false;
+    const float timeValue = frames->GetTargetTimeValue(static_cast<unsigned int>(frameIdx));
+
+    // 1) 把输入推进到当前时间步（与 ParaView 中管线按请求时间步更新输入一致）
+    binding->Input->UpdateAnimation(frameIdx);
+    refreshStaticMeshOutput(binding->Input); // 让输入模型也显示当前帧（真实几何）
+
+    // 2) filter 重新执行：几何固定为建立缓存的那一帧，只更新属性
+    if (!binding->Filter->ExecuteAtTimeStep(frameIdx, timeValue)) return false;
+
+    // 3) 输出对象身份不变（原地更新），刷新渲染数据
+    refreshStaticMeshOutput(output);
+    if (output->HasSubDataObject()) {
+        for (auto it = output->SubDataObjectIteratorBegin();
+             it != output->SubDataObjectIteratorEnd(); ++it) {
+            refreshStaticMeshOutput(it->second);
+        }
+    }
+
+    const std::string signature = StaticMeshAttributeSignature(output);
+    const bool attributesChanged = (signature != binding->AttributeSignature);
+    binding->AttributeSignature = signature;
+    Q_EMIT StaticMeshCacheUpdated(output, attributesChanged,
+                                  QString::fromStdString(binding->Filter->GetStatusMessage()));
+    return true;
+}
+
+void igQtAnimationWidget::syncStaticMeshCaches(int frameIdx, float timeValue) {
+    using namespace iGame;
+    if (m_StaticMeshCaches.empty()) return;
+
+    auto scene = SceneManager::Instance()->GetCurrentScene();
+    if (!scene || !scene->GetCurrentModel()) return;
+    auto current = scene->GetCurrentModel()->GetDataObject();
+    if (!current) return;
+
+    for (auto& binding: m_StaticMeshCaches) {
+        if (!binding.Filter || !binding.Input) continue;
+        // 只有「正在播放的模型」才是缓存的输入：它的当前帧数据已被更新过
+        if (binding.Input.get() != current.get()) continue;
+        if (!binding.Filter->GetStaticCacheEnabled()) continue;
+
+        if (!binding.Filter->ExecuteAtTimeStep(frameIdx, timeValue)) { continue; }
+
+        auto out = binding.Filter->GetOutput();
+        if (!out) continue;
+        binding.Output = out;
+
+        refreshStaticMeshOutput(out);
+        if (out->HasSubDataObject()) {
+            for (auto it = out->SubDataObjectIteratorBegin();
+                 it != out->SubDataObjectIteratorEnd(); ++it) {
+                refreshStaticMeshOutput(it->second);
+            }
+        }
+
+        const std::string signature = StaticMeshAttributeSignature(out);
+        const bool attributesChanged = (signature != binding.AttributeSignature);
+        binding.AttributeSignature = signature;
+
+        Q_EMIT StaticMeshCacheUpdated(out, attributesChanged,
+                                      QString::fromStdString(binding.Filter->GetStatusMessage()));
+    }
+}
+
 void igQtAnimationWidget::initAnimationComponents() {
     // 如果正在播放动画，跳过初始化以避免中断播放
     if (m_IsAnimationPlaying) {
@@ -629,21 +864,16 @@ void igQtAnimationWidget::initAnimationComponents() {
     }
 
 
-    if (iGame::SceneManager::Instance()->GetCurrentScene()->GetCurrentModel() ==
-                nullptr ||
-        iGame::SceneManager::Instance()
-                        ->GetCurrentScene()
-                        ->GetCurrentModel()
-                        ->GetDataObject()
-                        ->GetTimeFrames() == nullptr)
-        return;
+    auto animScene = iGame::SceneManager::Instance()->GetCurrentScene();
+    if (animScene == nullptr || animScene->GetCurrentModel() == nullptr) return;
+    auto animObject = animScene->GetCurrentModel()->GetDataObject();
+    if (!animObject) return;
+
+    // 帧列表：静态网格缓存的输出节点自身没有时间帧，用其输入的时间帧驱动
+    auto frames = timeFramesForModel(animObject);
+    if (frames == nullptr) return;
 //    IGAME_CORE_ERROR("Init Animation");
-    auto& timeArrays = iGame::SceneManager::Instance()
-                              ->GetCurrentScene()
-                              ->GetCurrentModel()
-                              ->GetDataObject()
-                              ->GetTimeFrames()
-                              ->GetArrays();
+    auto& timeArrays = frames->GetArrays();
     if (timeArrays.empty()) {
         ClearAnimationVCRInfo();
         return ;
@@ -673,15 +903,13 @@ void igQtAnimationWidget::initAnimationComponents() {
     ui->comboBox_AnimationCacheNum->setCurrentIndex(defaultCacheNum);
     ui->comboBox_AnimationCacheNum->blockSignals(false);
     
-    // 应用初始缓存设置
-    auto currentDrawObject = iGame::DynamicCast<iGame::DrawObject>(
-            iGame::SceneManager::Instance()->GetCurrentScene()->GetCurrentModel()->GetDataObject());
-    if (currentDrawObject && currentDrawObject->GetTimeFrames()) {
+    // 应用初始缓存设置（缓存输出节点用其输入的时间帧）
+    if (frames) {
         if (defaultCacheNum > 0) {
             // defaultCacheNum + 1: 用户设置的缓存帧数不包含当前帧，实际容量需要+1
-            currentDrawObject->GetTimeFrames()->EnableCache(defaultCacheNum + 1);
+            frames->EnableCache(defaultCacheNum + 1);
         } else {
-            currentDrawObject->GetTimeFrames()->DisableCache();
+            frames->DisableCache();
         }
     }
 
