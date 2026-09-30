@@ -1,5 +1,6 @@
 #include "Attribute/iGameExtractComponentFilter.h"
 #include "AttributeManipulation/iGameRandomVectorsFilter.h"
+#include "AttributeManipulation/iGamePerlinNoiseFilter.h"
 #include "PointCoordinates/iGamePointCoordinatesFilter.h"
 #include "Clip/iGameClipFilter.h"
 #include "CellSize/iGameCellSizeFilter.h"

@@ -388,6 +388,7 @@ igame_add_example(testMultiscaleInteraction MultiscaleInteraction/TestMultiscale
 
 # Sources
 igame_add_example(testRandomVectors Filter/AttributeManipulation/TestRandomVectors.cpp)
+igame_add_example(testPerlinNoise Filter/AttributeManipulation/TestPerlinNoise.cpp)
 
 # Feature extraction
 igame_add_example(testVortexExtraction Filter/FeatureExtraction/VortexExtraction.cpp)

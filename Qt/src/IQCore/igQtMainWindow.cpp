@@ -63,6 +63,7 @@
 #include "iGameFileIO.h"
 #include "iGameFilterIncludes.h"
 #include <AttributeManipulation/iGameRandomVectorsFilter.h>
+#include <AttributeManipulation/iGamePerlinNoiseFilter.h>
 #include <BuildAdjacencyRelation/iGameBuildAdjacencyRelationFilter.h>
 #include <IQComponents/Dialog/igQtBoxSettingDialog.h>
 #include <IQComponents/Dialog/igQtChromeFramelessDialog.h>
@@ -3941,6 +3942,84 @@ void igQtMainWindow::initAllFilters() {
                         dialog->close();
                     } else {
                         showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("随机向量生成失败。"));
+                    }
+                });
+            });
+
+    // Perlin 噪声：在输入模型的每个点上采样 3D Perlin 噪声（参数 Amplitude / Frequency / Phase），
+    // 输出新模型 + 点标量数组。
+    connect(attr_manipulation->addAction(QStringLiteral("Perlin 噪声 (Perlin Noise)")), &QAction::triggered, this,
+            [this](bool) {
+                if (rendererWidget->GetScene() == nullptr || rendererWidget->GetScene()->GetCurrentModel() == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("请先加载并选择模型。"));
+                    return;
+                }
+                auto obj = rendererWidget->GetScene()->GetCurrentModel()->GetDataObject();
+                if (obj == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("无可用模型"), QStringLiteral("当前模型没有可用数据。"));
+                    return;
+                }
+                if (iGame::DynamicCast<iGame::PointSet>(obj) == nullptr) {
+                    showDarkFramelessMessage(QStringLiteral("错误"),
+                                             QStringLiteral("当前模型不支持 Perlin 噪声（需要网格/点集）。"));
+                    return;
+                }
+
+                igQtFilterDialogDockWidget* dialog = new igQtFilterDialogDockWidget(this, true);
+                dialog->setFilterTitle(QStringLiteral("Perlin 噪声"));
+                const int ampId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                       QStringLiteral("振幅 (Amplitude)"), "1");
+                const int fxId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("频率 X (Frequency X)"), "1");
+                const int fyId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("频率 Y (Frequency Y)"), "1");
+                const int fzId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("频率 Z (Frequency Z)"), "1");
+                const int pxId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("相位 X (Phase X)"), "0");
+                const int pyId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("相位 Y (Phase Y)"), "0");
+                const int pzId = dialog->addParameter(igQtFilterDialogDockWidget::QT_LINE_EDIT,
+                                                      QStringLiteral("相位 Z (Phase Z)"), "0");
+                dialog->show();
+                dialog->setApplyFunctor([=, this]() {
+                    bool ok = false;
+                    // 逐项读取并校验
+                    struct ParamRead {
+                        int id;
+                        const char* name;
+                        double value;
+                    };
+                    ParamRead reads[7] = {
+                            {ampId, "振幅 (Amplitude)", 0.0},
+                            {fxId, "频率 X (Frequency X)", 0.0},
+                            {fyId, "频率 Y (Frequency Y)", 0.0},
+                            {fzId, "频率 Z (Frequency Z)", 0.0},
+                            {pxId, "相位 X (Phase X)", 0.0},
+                            {pyId, "相位 Y (Phase Y)", 0.0},
+                            {pzId, "相位 Z (Phase Z)", 0.0},
+                    };
+                    for (auto& read : reads) {
+                        read.value = dialog->getDouble(read.id, ok);
+                        if (!ok) {
+                            showDarkFramelessMessage(
+                                    QStringLiteral("错误"),
+                                    QString::fromUtf8(read.name) + QStringLiteral(" 不是有效数字。"));
+                            return;
+                        }
+                    }
+
+                    auto filter = PerlinNoiseFilter::New();
+                    filter->SetAmplitude(reads[0].value);
+                    filter->SetFrequency(reads[1].value, reads[2].value, reads[3].value);
+                    filter->SetPhase(reads[4].value, reads[5].value, reads[6].value);
+                    filter->SetInput(obj);
+                    if (filter->Execute()) {
+                        modelTreeWidget->addDataObjectToModelTree(filter->GetOutput(), ItemSource::Algorithm);
+                        rendererWidget->update();
+                        dialog->close();
+                    } else {
+                        showDarkFramelessMessage(QStringLiteral("错误"), QStringLiteral("Perlin 噪声生成失败（需要网格/点集）。"));
                     }
                 });
             });
